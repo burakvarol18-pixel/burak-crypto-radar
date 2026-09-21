@@ -394,7 +394,7 @@ def analyze_okx_coin(item, okx_interval, stop_mult, target_mult):
     return {**item.to_dict(), **indicators, **levels, **scenario, **derivative}
 
 
-@st.fragment(run_every="20s")
+@st.fragment(run_every="300s")
 def live_radar():
         st.subheader("OKX USDT Perpetual — LONG / SHORT Radar")
         st.caption("OKX canlı ticker ve açık perpetual mumundan geçici LONG/SHORT adayları. Hesap bağlanmaz, emir gönderilmez.")
