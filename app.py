@@ -1,4 +1,4 @@
-"""BURAK CRYPTO RADAR V3.1 — OKX USDT perpetual market research only.
+"""BURAK CRYPTO RADAR V4 — OKX LIVE USDT perpetual market research only.
 No orders, account access, or leverage execution.
 """
 import numpy as np
@@ -7,7 +7,7 @@ import plotly.graph_objects as go
 import requests
 import streamlit as st
 
-st.set_page_config(page_title="Burak Crypto Radar V3.1 — OKX", page_icon="📡", layout="wide")
+st.set_page_config(page_title="Burak Crypto Radar V4 — OKX LIVE", page_icon="📡", layout="wide")
 HEADERS = {"User-Agent": "BurakCryptoRadar/1.0", "accept": "application/json"}
 STABLE = {"usdt", "usdc", "dai", "fdusd", "tusd", "usde", "usdd", "pyusd", "frax"}
 
@@ -203,7 +203,7 @@ def backtest_directional(df, hold_bars=4, fee_pct=.1, slip_pct=.05):
 
 
 
-@st.cache_data(ttl=300, show_spinner=False)
+@st.cache_data(ttl=15, show_spinner=False)
 def okx_public(path, params=None):
     payload = get_json("https://www.okx.com" + path, params)
     if payload.get("code") != "0":
@@ -211,7 +211,7 @@ def okx_public(path, params=None):
     return payload.get("data", [])
 
 
-@st.cache_data(ttl=300, show_spinner=False)
+@st.cache_data(ttl=15, show_spinner=False)
 def okx_perpetual_universe():
     instruments = okx_public("/api/v5/public/instruments", {"instType": "SWAP"})
     tickers = okx_public("/api/v5/market/tickers", {"instType": "SWAP"})
@@ -233,11 +233,12 @@ def okx_perpetual_universe():
         if last <= 0 or volume_usd <= 0:
             continue
         records.append({"Parite": inst_id, "Sembol": inst_id.removesuffix("-USDT-SWAP"),
-                        "Fiyat ($)": last, "24s hacim yaklaşık ($)": volume_usd})
+                        "Fiyat ($)": last, "24s hacim yaklaşık ($)": volume_usd,
+                        "Ticker UTC": pd.to_datetime(int(ticker["ts"]), unit="ms", utc=True)})
     return pd.DataFrame(records).sort_values("24s hacim yaklaşık ($)", ascending=False)
 
 
-@st.cache_data(ttl=300, show_spinner=False)
+@st.cache_data(ttl=15, show_spinner=False)
 def okx_candles(inst_id, interval):
     bar = {"1h": "1H", "4h": "4H", "1d": "1Dutc"}[interval]
     data = okx_public("/api/v5/market/candles",
@@ -245,7 +246,7 @@ def okx_candles(inst_id, interval):
     if not data:
         raise ValueError("OKX mum verisi boş")
     # OKX: ts,o,h,l,c,vol,volCcy,volCcyQuote,confirm; newest first.
-    rows = [r for r in data if len(r) >= 9 and r[8] == "1"]
+    rows = [r for r in data if len(r) >= 9]
     if not rows:
         raise ValueError("Tamamlanmış OKX mumu yok")
     df = pd.DataFrame(rows, columns=["ts", "open", "high", "low", "close",
@@ -256,7 +257,7 @@ def okx_candles(inst_id, interval):
     return df.sort_values("date").dropna(subset=["open", "high", "low", "close", "quote_volume"]).reset_index(drop=True)
 
 
-@st.cache_data(ttl=300, show_spinner=False)
+@st.cache_data(ttl=60, show_spinner=False)
 def okx_derivatives(inst_id):
     funding = okx_public("/api/v5/public/funding-rate", {"instId": inst_id})
     oi = okx_public("/api/v5/public/open-interest",
@@ -271,150 +272,109 @@ st.title("📡 BURAK CRYPTO RADAR V3 — OKX")
 st.caption("Yalnızca OKX USDT perpetual verileri • LONG / SHORT araştırma sinyalleri • Otomatik emir göndermez")
 with st.sidebar:
     st.header("OKX veri ayarları")
-    st.caption("OKX mum, fonlama ve OI verileri 5 dakika önbellekli. Sinyaller son tamamlanmış mum üzerinden hesaplanır.")
+    st.caption("Canlı radar yaklaşık 20 saniyede yenilenir. Ticker ve mum önbelleği 15 sn, fonlama/OI 60 sn.")
     if st.button("🔄 OKX verilerini yenile"):
         st.cache_data.clear()
         st.rerun()
 
 radar_tab, futures, methodology = st.tabs(["🟢🔴 OKX Perpetual Radar", "⚠️ Vadeli risk ekranı", "ℹ️ Metodoloji"])
 
-with radar_tab:
-    st.subheader("OKX USDT Perpetual — LONG / SHORT Radar")
-    st.caption("Gerçek OKX perpetual mumları, fonlama oranı ve açık pozisyon verisi. Hesap bağlanmaz, emir gönderilmez. Sinyaller son tamamlanmış muma göredir.")
-    p1, p2, p3 = st.columns(3)
-    with p1:
-        okx_interval = st.selectbox("Perpetual zaman dilimi", ["1h", "4h", "1d"], key="okx_interval")
-    with p2:
-        okx_limit = st.slider("Hacme göre analiz edilecek parite", 5, 30, 15, 5, key="okx_limit")
-    with p3:
-        okx_min_vol = st.number_input("En düşük yaklaşık 24s hacim ($ milyon)", min_value=0., value=5., step=5., key="okx_min_vol")
-    st.info("Bu ekran CoinGecko market cap filtresinden bağımsızdır: OKX'teki USDT perpetual pariteleri yaklaşık 24 saatlik işlem hacmine göre tarar.")
-    a1, a2 = st.columns(2)
-    with a1:
-        stop_mult = st.slider("ATR stop katsayısı", 0.5, 5.0, 1.5, 0.25)
-    with a2:
-        target_mult = st.slider("ATR hedef katsayısı", 0.5, 8.0, 3.0, 0.25)
-    st.caption("ATR seviyeleri son kapanmış mum kapanışını referans alır; canlı giriş fiyatı veya emir değildir.")
-    try:
-        universe = okx_perpetual_universe()
-        universe = universe[(universe["24s hacim yaklaşık ($)"] >= okx_min_vol * 1e6)
-                            & (~universe["Sembol"].str.lower().isin(STABLE))]
-        st.caption(f"OKX filtreyi geçen {len(universe)} USDT perpetual paritesi; ilk {min(okx_limit, len(universe))} analiz ediliyor.")
-        okx_rows = []
-        okx_fail = 0
-        with st.spinner("OKX perpetual mumları ve vadeli göstergeleri alınıyor..."):
-            for _, item in universe.head(okx_limit).iterrows():
-                inst = item["Parite"]
-                try:
-                    frame = okx_candles(inst, okx_interval)
-                    indicators = technical(frame)
-                    if indicators is None:
-                        okx_fail += 1
-                        continue
+@st.fragment(run_every="20s")
+def live_radar():
+        st.subheader("OKX USDT Perpetual — LONG / SHORT Radar")
+        st.caption("OKX canlı ticker ve açık perpetual mumundan geçici LONG/SHORT adayları. Hesap bağlanmaz, emir gönderilmez.")
+        p1, p2, p3 = st.columns(3)
+        with p1:
+            okx_interval = st.selectbox("Perpetual zaman dilimi", ["1h", "4h", "1d"], key="okx_interval")
+        with p2:
+            okx_limit = st.slider("Hacme göre analiz edilecek parite", 5, 30, 15, 5, key="okx_limit")
+        with p3:
+            okx_min_vol = st.number_input("En düşük yaklaşık 24s hacim ($ milyon)", min_value=0., value=5., step=5., key="okx_min_vol")
+        st.info("Bu ekran CoinGecko market cap filtresinden bağımsızdır: OKX'teki USDT perpetual pariteleri yaklaşık 24 saatlik işlem hacmine göre tarar.")
+        a1, a2 = st.columns(2)
+        with a1:
+            stop_mult = st.slider("ATR stop katsayısı", 0.5, 5.0, 1.5, 0.25)
+        with a2:
+            target_mult = st.slider("ATR hedef katsayısı", 0.5, 8.0, 3.0, 0.25)
+        st.caption("ATR seviyeleri son kapanmış mum kapanışını referans alır; canlı giriş fiyatı veya emir değildir.")
+        try:
+            universe = okx_perpetual_universe()
+            universe = universe[(universe["24s hacim yaklaşık ($)"] >= okx_min_vol * 1e6)
+                                & (~universe["Sembol"].str.lower().isin(STABLE))]
+            st.caption(f"OKX filtreyi geçen {len(universe)} USDT perpetual paritesi; ilk {min(okx_limit, len(universe))} analiz ediliyor.")
+            okx_rows = []
+            okx_fail = 0
+            with st.spinner("OKX perpetual mumları ve vadeli göstergeleri alınıyor..."):
+                for _, item in universe.head(okx_limit).iterrows():
+                    inst = item["Parite"]
                     try:
-                        derivative = okx_derivatives(inst)
+                        frame = okx_candles(inst, okx_interval)
+                        if frame.iloc[-1]["confirm"] != "0":
+                            okx_fail += 1
+                            continue
+                        frame = frame.copy()
+                        live_price = float(item["Fiyat ($)"])
+                        frame.loc[frame.index[-1], "close"] = live_price
+                        frame.loc[frame.index[-1], "high"] = max(float(frame.iloc[-1]["high"]), live_price)
+                        frame.loc[frame.index[-1], "low"] = min(float(frame.iloc[-1]["low"]), live_price)
+                        seconds = {"1h": 3600, "4h": 14400, "1d": 86400}[okx_interval]
+                        elapsed = (item["Ticker UTC"] - frame.iloc[-1]["date"]).total_seconds()
+                        fraction = min(1., max(.1, elapsed / seconds))
+                        frame.loc[frame.index[-1], "quote_volume"] /= fraction
+                        indicators = technical(frame)
+                        if indicators is None:
+                            okx_fail += 1
+                            continue
+                        try:
+                            derivative = okx_derivatives(inst)
+                        except Exception:
+                            derivative = {"Funding %": np.nan, "OI ($)": np.nan}
+                        levels = levels_and_risks(frame, {})
+                        scenario = atr_scenario(indicators, levels, stop_mult, target_mult)
+                        indicators["Sinyal mumu"] += " (açık / geçici)"
+                        okx_rows.append({**item.to_dict(), **indicators,
+                                         **levels, **scenario, **derivative})
                     except Exception:
-                        derivative = {"Funding %": np.nan, "OI ($)": np.nan}
-                    levels = levels_and_risks(frame, {})
-                    scenario = atr_scenario(indicators, levels, stop_mult, target_mult)
-                    okx_rows.append({**item.to_dict(), **indicators,
-                                     **levels, **scenario, **derivative})
-                except Exception:
-                    okx_fail += 1
-        if okx_fail:
-            st.warning(f"{okx_fail} paritede yeterli mum veya veri alınamadı.")
-        if not okx_rows:
-            st.warning("Analiz edilebilir perpetual parite bulunamadı. Daha sonra tekrar dene.")
-        else:
-            radar = pd.DataFrame(okx_rows)
-            order = {"🟢 LONG": 0, "🔴 SHORT": 1, "⚪ BEKLE": 2}
-            radar["_order"] = radar["Sinyal"].map(order).fillna(3)
-            radar = radar.sort_values(["_order", "24s hacim yaklaşık ($)"],
-                                      ascending=[True, False]).drop(columns="_order")
-            counts = radar["Sinyal"].value_counts()
-            r1, r2, r3 = st.columns(3)
-            r1.metric("🟢 LONG", int(counts.get("🟢 LONG", 0)))
-            r2.metric("🔴 SHORT", int(counts.get("🔴 SHORT", 0)))
-            r3.metric("⚪ BEKLE", int(counts.get("⚪ BEKLE", 0)))
-            show = ["Parite", "Sinyal", "Sinyal mumu", "Fiyat ($)",
-                    "Referans giriş ($)", "Stop ($)", "Hedef ($)",
-                    "Stop uzaklık %", "Hedef uzaklık %", "Risk/Ödül",
-                    "24s hacim yaklaşık ($)", "RSI", "ADX", "Hacim katı",
-                    "Funding %", "OI ($)", "20 mum destek ($)",
-                    "20 mum direnç ($)", "ATR14 %", "Risk notları"]
-            def okx_signal_color(row):
-                signal = row["Sinyal"]
-                bg = ("background-color: #143d2b; color: #e6fff0" if signal == "🟢 LONG"
-                      else "background-color: #52232b; color: #fff0f0" if signal == "🔴 SHORT"
-                      else "")
-                return [bg] * len(row)
-            st.dataframe(radar[show].style.apply(okx_signal_color, axis=1),
-                         hide_index=True, use_container_width=True)
-            st.caption("Funding % mevcut fonlama oranıdır; tek başına LONG/SHORT koşuluna katılmaz. OI ($) mevcut açık pozisyon anlık görüntüsüdür; OI değişimi değildir. OKX hacmi yaklaşık USD cinsindedir.")
-            st.download_button("📥 OKX perpetual radar CSV",
-                               radar.to_csv(index=False).encode("utf-8-sig"),
-                               "burak_okx_perpetual_radar.csv", "text/csv")
-            selected_inst = st.selectbox("Perpetual geçmiş testi / grafik", radar["Parite"].tolist(),
-                                         key="okx_backtest_inst")
-            h1, h2, h3 = st.columns(3)
-            with h1:
-                okx_hold = st.selectbox("Pozisyon süresi (mum)", [1, 2, 4, 8, 12, 24],
-                                        index=2, key="okx_hold")
-            with h2:
-                okx_fee = st.number_input("Tek yön komisyon (%)", min_value=0.,
-                                          max_value=2., value=.1, step=.01, key="okx_fee")
-            with h3:
-                okx_slip = st.number_input("Tek yön fiyat kayması (%)", min_value=0.,
-                                           max_value=2., value=.05, step=.01, key="okx_slip")
-            hist = okx_candles(selected_inst, okx_interval)
-            selected_signal = radar.loc[radar["Parite"] == selected_inst].iloc[0]
-            if pd.notna(selected_signal["Stop ($)"]):
-                z1, z2, z3 = st.columns(3)
-                z1.metric("Referans giriş ($)", f'{selected_signal["Referans giriş ($)"]:.8g}')
-                z2.metric("ATR stop ($)", f'{selected_signal["Stop ($)"]:.8g}')
-                z3.metric("ATR hedef ($)", f'{selected_signal["Hedef ($)"]:.8g}')
-                st.caption(f'Risk/Ödül: 1:{selected_signal["Risk/Ödül"]:.2f} | Stop mesafesi: %{selected_signal["Stop uzaklık %"]:.2f} | Hedef mesafesi: %{selected_signal["Hedef uzaklık %"]:.2f}')
+                        okx_fail += 1
+            if okx_fail:
+                st.warning(f"{okx_fail} paritede yeterli mum veya veri alınamadı.")
+            if not okx_rows:
+                st.warning("Analiz edilebilir perpetual parite bulunamadı. Daha sonra tekrar dene.")
             else:
-                st.info("BEKLE: ATR stop/hedef senaryosu oluşturulmadı.")
-            fig_okx = go.Figure(go.Candlestick(x=hist.date, open=hist.open,
-                                               high=hist.high, low=hist.low,
-                                               close=hist.close, name=selected_inst))
-            for n in (20, 50, 200):
-                fig_okx.add_trace(go.Scatter(x=hist.date,
-                    y=hist.close.ewm(span=n, adjust=False).mean(),
-                    mode="lines", name=f"EMA {n}"))
-            if pd.notna(selected_signal["Stop ($)"]):
-                fig_okx.add_hline(y=float(selected_signal["Referans giriş ($)"]), line_dash="dot", annotation_text="Referans giriş")
-                fig_okx.add_hline(y=float(selected_signal["Stop ($)"]), line_dash="dash", line_color="red", annotation_text="ATR stop")
-                fig_okx.add_hline(y=float(selected_signal["Hedef ($)"]), line_dash="dash", line_color="green", annotation_text="ATR hedef")
-            fig_okx.update_layout(height=480, xaxis_rangeslider_visible=False,
-                                   template="plotly_dark")
-            st.plotly_chart(fig_okx, use_container_width=True)
-            st.caption("Geçmiş test sabit mum sonunda çıkar; ATR stop/hedef tetiklenmesini test etmez.")
-            past = backtest_directional(hist, okx_hold, okx_fee, okx_slip)
-            st.caption(f"OKX geçmiş veri: {hist.date.iloc[0]:%Y-%m-%d %H:%M} – {hist.date.iloc[-1]:%Y-%m-%d %H:%M} UTC ({len(hist)} kapanmış mum). İlk 205 mum indikatör ısınmasıdır.")
-            if past.empty:
-                st.info("Mevcut kısa veri penceresinde tamamlanmış yeni sinyal işlemi bulunamadı.")
-            else:
-                win_rate = 100 * (past["Net %"] > 0).mean()
-                curve = (1 + past["Net %"] / 100).cumprod()
-                drawdown = (curve / curve.cummax() - 1) * 100
-                k1, k2, k3, k4 = st.columns(4)
-                k1.metric("İşlem sayısı", len(past))
-                k2.metric("Net kazançlı işlem", f"%{win_rate:.1f}")
-                k3.metric("Ortalama net / işlem", f"%{past['Net %'].mean():.2f}")
-                k4.metric("En yüksek gerileme", f"%{drawdown.min():.2f}")
-                st.metric("Varsayımsal bileşik 1x sonuç", f"%{(curve.iloc[-1]-1)*100:.2f}")
-                st.dataframe(past.sort_values("Sinyal UTC", ascending=False),
+                radar = pd.DataFrame(okx_rows)
+                order = {"🟢 LONG": 0, "🔴 SHORT": 1, "⚪ BEKLE": 2}
+                radar["_order"] = radar["Sinyal"].map(order).fillna(3)
+                radar = radar.sort_values(["_order", "24s hacim yaklaşık ($)"],
+                                          ascending=[True, False]).drop(columns="_order")
+                counts = radar["Sinyal"].value_counts()
+                r1, r2, r3 = st.columns(3)
+                r1.metric("🟢 LONG", int(counts.get("🟢 LONG", 0)))
+                r2.metric("🔴 SHORT", int(counts.get("🔴 SHORT", 0)))
+                r3.metric("⚪ BEKLE", int(counts.get("⚪ BEKLE", 0)))
+                show = ["Parite", "Sinyal", "Ticker UTC", "Sinyal mumu", "Fiyat ($)",
+                        "Referans giriş ($)", "Stop ($)", "Hedef ($)",
+                        "Stop uzaklık %", "Hedef uzaklık %", "Risk/Ödül",
+                        "24s hacim yaklaşık ($)", "RSI", "ADX", "Hacim katı",
+                        "Funding %", "OI ($)", "20 mum destek ($)",
+                        "20 mum direnç ($)", "ATR14 %", "Risk notları"]
+                def okx_signal_color(row):
+                    signal = row["Sinyal"]
+                    bg = ("background-color: #143d2b; color: #e6fff0" if signal == "🟢 LONG"
+                          else "background-color: #52232b; color: #fff0f0" if signal == "🔴 SHORT"
+                          else "")
+                    return [bg] * len(row)
+                st.dataframe(radar[show].style.apply(okx_signal_color, axis=1),
                              hide_index=True, use_container_width=True)
-                if len(past) < 30:
-                    st.warning(f"Yalnızca {len(past)} geçmiş işlem var. 300 mumluk kısa pencere nedeniyle bu testten güvenilir başarı oranı çıkarılamaz.")
-                st.download_button("📥 OKX geçmiş test CSV",
-                                   past.to_csv(index=False).encode("utf-8-sig"),
-                                   f"okx_backtest_{selected_inst}_{okx_interval}.csv", "text/csv")
-            st.warning("Geçmiş test perpetual mumlarını kullanır; fonlama ödemesi, likidasyon, marjin ve kaldıraç etkisi hesaplanmaz. OKX sonuçları Binance emir gerçekleşmelerini temsil etmez.")
-    except Exception as exc:
-        st.error(f"OKX radar yüklenemedi: {type(exc).__name__}: {exc}")
+                st.caption("Funding % mevcut fonlama oranıdır; tek başına LONG/SHORT koşuluna katılmaz. OI ($) mevcut açık pozisyon anlık görüntüsüdür; OI değişimi değildir. OKX hacmi yaklaşık USD cinsindedir.")
+                st.download_button("📥 OKX perpetual radar CSV",
+                                   radar.to_csv(index=False).encode("utf-8-sig"),
+                                   "burak_okx_perpetual_radar.csv", "text/csv")
+                st.warning("Canlı aday sinyal: Açık mum kapanmadan LONG/SHORT değişebilir. Ticker UTC zamanını kontrol et; eski fiyatı işlem referansı alma.")
+        except Exception as exc:
+            st.error(f"OKX radar yüklenemedi: {type(exc).__name__}: {exc}")
+
+with radar_tab:
+    live_radar()
 
 
 with futures:
@@ -432,13 +392,7 @@ with futures:
 
 
 with methodology:
-    st.markdown("""**V3.1 ATR senaryosu:** LONG için son kapanmış mum kapanışı eksi ATR14 × stop katsayısı ve artı ATR14 × hedef katsayısı; SHORT için tersidir. Yalnızca aktif LONG/SHORT etiketlerinde gösterilir. Referans giriş gerçek emir gerçekleşmesi değildir. Mevcut geçmiş test ATR stop/hedef çıkışlarını modellemez; komisyon, fonlama ve likidasyon bu senaryoda hesaplanmaz.\n\n**Veri kaynağı:** Yalnızca OKX public API: USDT perpetual (SWAP) instruments, tickers, candles, funding-rate ve open-interest. CoinGecko, Kraken ve Binance piyasa verileri kullanılmaz. API anahtarı veya hesap bağlantısı gerekmez.
+    st.markdown("""**V4 canlı aday sinyaller:** OKX USDT perpetual ticker fiyatı ve oluşmakta olan mum (confirm=0). Fiyat/mum önbelleği 15 saniye, fonlama ve OI 60 saniye. Açık sekme yaklaşık 20 saniyede yenilenir. Ticker UTC, OKX fiyat zaman damgasıdır. REST veri kaynakları tam eşzamanlı olmayabilir.
 
-**Sinyal koşulları:** LONG için kapanış > EMA20 > EMA50, MACD > sinyal çizgisi, +DI > -DI, ADX ≥20, RSI 45–68 ve son kapanmış mumun hacmi önceki 20 mum ortalamasının ≥1,2 katı. SHORT için kapanış < EMA20 < EMA50, MACD < sinyal çizgisi, -DI > +DI, ADX ≥20, RSI 32–55 ve aynı hacim koşulu. Diğer durumlar BEKLE. Teknik göstergeler kapanmış perpetual mumlarından hesaplanır.
-
-**Funding ve OI:** Funding % mevcut fonlama oranıdır; OI ($) açık pozisyonun anlık USD değeridir. Henüz sinyal koşuluna dahil edilmez; OI değişimiyle karıştırılmamalıdır.
-
-**Geçmiş test:** Yeni yön sinyalinin ardından bir sonraki mum açılışında varsayımsal giriş, seçilen mum sayısı sonunda kapanışta çıkış; çakışan pozisyon yok. Tek yön komisyon ve fiyat kayması iki kez düşülür. OKX kısa mum geçmişi ve ilk 205 mumluk indikatör ısınması nedeniyle işlem örneklemi küçük olabilir. Fonlama ödemesi, gerçek emir gerçekleşmesi, likidasyon, marjin ve kaldıraç dahil değildir.
-
-**Yenileme:** OKX verileri 5 dakika önbellekte tutulur; uygulama arka planda sürekli tarama veya bildirim göndermez. Sinyaller yatırım getirisi garantisi değildir. Binance'te gerçekleşecek işlemler OKX sonuçlarından farklı olabilir.
+**Göstergeler:** EMA, MACD, RSI, ADX ve ATR için önceki mumlar matematiksel olarak gereklidir; geçmiş performans testi yapılmaz. Açık mum hacmi geçen süreye göre yaklaşık tam mum hacmine ölçeklenir (ilk %10 için tahmin özellikle belirsizdir). Mum kapanmadan sinyal değişebilir. ATR stop/hedef canlı ticker fiyatına göre varsayımsaldır, gerçek emir gerçekleşmesi değildir. Funding, spread, komisyon, kayma, kaldıraç ve likidasyon dahil değildir. Otomatik emir gönderilmez.
 """)
