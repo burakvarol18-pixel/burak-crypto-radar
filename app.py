@@ -1,4 +1,4 @@
-"""BURAK CRYPTO RADAR V4.5 — OKX LIVE USDT perpetual market research only.
+"""BURAK CRYPTO RADAR V5.0 — OKX LIVE USDT perpetual market research only.
 No orders, account access, or leverage execution.
 """
 import numpy as np
@@ -7,7 +7,7 @@ import plotly.graph_objects as go
 import requests
 import streamlit as st
 
-st.set_page_config(page_title="Burak Crypto Radar V4.5 — OKX LIVE", page_icon="📡", layout="wide")
+st.set_page_config(page_title="Burak Crypto Radar V5.0 — OKX LIVE", page_icon="📡", layout="wide")
 HEADERS = {"User-Agent": "BurakCryptoRadar/1.0", "accept": "application/json"}
 STABLE = {"usdt", "usdc", "dai", "fdusd", "tusd", "usde", "usdd", "pyusd", "frax"}
 
@@ -317,16 +317,16 @@ def okx_derivatives(inst_id):
 
 
 
-st.title("📡 BURAK CRYPTO RADAR V3 — OKX")
+st.title("📡 BURAK CRYPTO RADAR V5 — OKX")
 st.caption("Yalnızca OKX USDT perpetual verileri • LONG / SHORT araştırma sinyalleri • Otomatik emir göndermez")
 with st.sidebar:
     st.header("OKX veri ayarları")
-    st.caption("Canlı radar yaklaşık 20 saniyede yenilenir. Ticker ve mum önbelleği 15 sn, fonlama/OI 60 sn.")
+    st.caption("Radarlar kendi seçtiğin aralıklarla yenilenir. Ticker ve mum önbelleği 15 sn, fonlama/OI 60 sn.")
     if st.button("🔄 OKX verilerini yenile"):
         st.cache_data.clear()
         st.rerun()
 
-radar_tab, futures, methodology = st.tabs(["🟢🔴 OKX Perpetual Radar", "⚠️ Vadeli risk ekranı", "ℹ️ Metodoloji"])
+radar_tab, whale_tab, futures, methodology = st.tabs(["🟢🔴 OKX Perpetual Radar", "🐋 OKX Balina / Akıllı Para", "⚠️ Vadeli risk ekranı", "ℹ️ Metodoloji"])
 
 def analyze_okx_coin(item, okx_interval, stop_mult, target_mult):
     inst = item["Parite"]
@@ -509,6 +509,152 @@ with radar_tab:
     )
     st.caption(f"Otomatik yenileme: {refresh_minutes} dakikada bir. Sayfa açık kaldığı sürece çalışır.")
     st.fragment(run_every=f"{refresh_minutes * 60}s")(live_radar)()
+
+
+
+# The whale tab uses only public OKX market aggregates, never private wallets.
+@st.cache_data(ttl=60, show_spinner=False)
+def okx_recent_trades(inst_id):
+    return okx_public("/api/v5/market/trades", {"instId": inst_id, "limit": "500"})
+
+
+def whale_market_reading(item, instrument, min_trade_usd):
+    inst_id = item["Parite"]
+    price = float(item["Fiyat ($)"])
+    trades = okx_recent_trades(inst_id)
+    contract_value = float(instrument.get("ctVal") or 0)
+    contract_mult = float(instrument.get("ctMult") or 1)
+    contract_ccy = instrument.get("ctValCcy", "")
+    base = item["Sembol"]
+    if contract_value <= 0 or contract_mult <= 0 or contract_ccy != base:
+        raise ValueError("Sözleşme USD nominali güvenle hesaplanamadı (ctValCcy uyuşmuyor)")
+    now_ms = int(pd.Timestamp.now(tz="UTC").timestamp() * 1000)
+    parsed = []
+    for trade in trades:
+        try:
+            px = float(trade["px"])
+            sz = float(trade["sz"])
+            ts = int(trade["ts"])
+            side = trade["side"]
+            if px > 0 and sz > 0 and side in ("buy", "sell") and 0 <= now_ms - ts <= 600000:
+                parsed.append((side, px * sz * contract_value * contract_mult, ts))
+        except (KeyError, TypeError, ValueError):
+            continue
+    if len(parsed) < 30:
+        raise ValueError("Son 10 dakikada en az 30 geçerli işlem yok; 500 işlem sınırı nedeniyle örnek yetersiz")
+    buy = sum(v for side, v, _ in parsed if side == "buy")
+    sell = sum(v for side, v, _ in parsed if side == "sell")
+    total = buy + sell
+    if total <= 0:
+        raise ValueError("İşlem nominali hesaplanamadı")
+    buy_share = buy / total
+    big = [t for t in parsed if t[1] >= min_trade_usd]
+    big_buy = sum(t[1] for t in big if t[0] == "buy")
+    big_sell = sum(t[1] for t in big if t[0] == "sell")
+    big_total = big_buy + big_sell
+    big_share = big_buy / big_total if big_total > 0 else np.nan
+    derivatives = okx_derivatives(inst_id)
+    oi = float(derivatives["OI ($)"])
+    history = st.session_state.setdefault("whale_oi_history", {})
+    previous = history.get(inst_id)
+    now = pd.Timestamp.now(tz="UTC")
+    oi_change = np.nan
+    if np.isfinite(oi) and oi > 0:
+        if previous is not None:
+            prev_oi, prev_ts = previous
+            age = (now - prev_ts).total_seconds()
+            if 60 <= age <= 86400 and prev_oi > 0:
+                oi_change = (oi / prev_oi - 1) * 100
+        if previous is None or (now - previous[1]).total_seconds() >= 60:
+            history[inst_id] = (oi, now)
+    frame = okx_candles(inst_id, "1h")
+    if frame.empty or frame.iloc[-1]["confirm"] != "0":
+        raise ValueError("Güncel 1 saatlik mum alınamadı")
+    hour_open = float(frame.iloc[-1]["open"])
+    price_change = (price / hour_open - 1) * 100 if hour_open > 0 else np.nan
+    # No signal before an actual OI comparison is available.
+    long_tests = {"Agresif alış ≥%58": buy_share >= .58,
+                  "1s fiyat artışı ≥%0,2": price_change >= .2,
+                  "OI artışı ≥%1": np.isfinite(oi_change) and oi_change >= 1}
+    short_tests = {"Agresif satış ≥%58": buy_share <= .42,
+                   "1s fiyat düşüşü ≥%0,2": price_change <= -.2,
+                   "OI artışı ≥%1": np.isfinite(oi_change) and oi_change >= 1}
+    if not np.isfinite(oi_change):
+        status = "⏳ OI karşılaştırması bekleniyor"
+    elif all(long_tests.values()):
+        status = "🟢 LONG yönlü akış"
+    elif all(short_tests.values()):
+        status = "🔴 SHORT yönlü akış"
+    elif sum(long_tests.values()) >= 2:
+        status = "🟡 LONG akış adayı"
+    elif sum(short_tests.values()) >= 2:
+        status = "🟠 SHORT akış adayı"
+    else:
+        status = "⚪ Yön teyidi yok"
+    return {"Parite": inst_id, "Akış durumu": status, "Fiyat ($)": price,
+            "1s fiyat değişimi %": round(price_change, 2),
+            "Agresif alış payı %": round(buy_share * 100, 1),
+            "Büyük işlem alış payı %": round(big_share * 100, 1) if np.isfinite(big_share) else np.nan,
+            "Büyük işlem sayısı": len(big), "İncelenen işlem": len(parsed),
+            "Örneklem süresi sn": round((max(x[2] for x in parsed) - min(x[2] for x in parsed)) / 1000),
+            "OI ($)": oi, "OI değişimi %": round(oi_change, 2) if np.isfinite(oi_change) else np.nan,
+            "Funding %": derivatives["Funding %"],
+            "LONG akış koşulu": f"{sum(long_tests.values())}/3",
+            "SHORT akış koşulu": f"{sum(short_tests.values())}/3",
+            "Eksik LONG": ", ".join(k for k, v in long_tests.items() if not v),
+            "Eksik SHORT": ", ".join(k for k, v in short_tests.items() if not v),
+            "Ticker UTC": item["Ticker UTC"]}
+
+
+def whale_radar():
+    st.subheader("🐋 OKX Balina / Akıllı Para — Bağımsız araştırma radarı")
+    st.info("Yalnızca OKX halka açık USDT perpetual işlemleri kullanılır. Cüzdan, yatırımcı kimliği veya %80 başarı oranı doğrulanamaz. Büyük işlem = nominali seçilen eşiği aşan gerçekleşmiş işlem; aynı kişi anlamına gelmez.")
+    w1, w2, w3 = st.columns(3)
+    with w1:
+        top_n = st.slider("Hacme göre taranacak parite", 3, 30, 10, key="whale_limit")
+    with w2:
+        minimum = st.number_input("Minimum 24s hacim ($ milyon)", min_value=0., value=10., step=5., key="whale_minimum")
+    with w3:
+        large_trade = st.number_input("Büyük işlem eşiği ($)", min_value=1000, value=50000, step=10000, key="whale_large_trade")
+    st.caption("Akış: son en fazla 500 gerçekleşmiş işlem, son 10 dakika; 1 saatlik fiyat değişimi ve iki ayrı zamanda gözlemlenmiş OI. OI karşılaştırması için sekmeyi açık tutup en az 60 saniye sonra yenile.")
+    try:
+        universe = okx_perpetual_universe()
+        universe = universe[(universe["24s hacim yaklaşık ($)"] >= minimum * 1e6)
+                            & (~universe["Sembol"].str.lower().isin(STABLE))]
+        instruments = okx_public("/api/v5/public/instruments", {"instType": "SWAP"})
+        by_id = {x["instId"]: x for x in instruments}
+        rows, errors = [], []
+        for _, item in universe.head(top_n).iterrows():
+            try:
+                rows.append(whale_market_reading(item, by_id[item["Parite"]], large_trade))
+            except Exception as exc:
+                errors.append(f'{item["Parite"]}: {exc}')
+        if rows:
+            result = pd.DataFrame(rows)
+            priority = {"🟢 LONG yönlü akış": 0, "🔴 SHORT yönlü akış": 1,
+                        "🟡 LONG akış adayı": 2, "🟠 SHORT akış adayı": 3,
+                        "⏳ OI karşılaştırması bekleniyor": 4, "⚪ Yön teyidi yok": 5}
+            result["_rank"] = result["Akış durumu"].map(priority).fillna(6)
+            result = result.sort_values("_rank").drop(columns="_rank")
+            st.dataframe(result, use_container_width=True, hide_index=True)
+            st.download_button("📥 OKX balina akışı CSV",
+                               result.to_csv(index=False).encode("utf-8-sig"),
+                               "burak_okx_balina_akisi.csv", "text/csv", key="whale_csv")
+        else:
+            st.warning("Şu anda güvenilir akış analizi için yeterli OKX verisi bulunamadı.")
+        if errors:
+            with st.expander(f"Veri alınamayan pariteler ({len(errors)})"):
+                st.write("\n".join(errors))
+    except Exception as exc:
+        st.error(f"OKX balina radarı yüklenemedi: {type(exc).__name__}: {exc}")
+    st.caption("Yorum: LONG akış = alış payı ≥%58 + 1s fiyat ≥%0,2 + OI ≥%1; SHORT akış = satış payı ≥%58 + 1s fiyat ≤-%0,2 + OI ≥%1. Bu eşikler deneysel başlangıç parametreleridir, test edilmiş kazanma oranı değildir. OI artışı pozisyon yönünü tek başına göstermez. Fonlama ve büyük işlem payı bilgi amaçlıdır. Otomatik emir yok.")
+
+
+with whale_tab:
+    whale_refresh = st.selectbox("🐋 Balina radarı yenileme", [1, 2, 3, 5, 10, 15], index=1,
+                                 format_func=lambda x: f"{x} dakika", key="whale_refresh")
+    st.fragment(run_every=f"{whale_refresh * 60}s")(whale_radar)()
+
 
 
 with futures:
