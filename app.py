@@ -328,7 +328,6 @@ with st.sidebar:
 
 radar_tab, futures, methodology = st.tabs(["🟢🔴 OKX Perpetual Radar", "⚠️ Vadeli risk ekranı", "ℹ️ Metodoloji"])
 
-@st.fragment(run_every="20s")
 def analyze_okx_coin(item, okx_interval, stop_mult, target_mult):
     inst = item["Parite"]
     frame = okx_candles(inst, okx_interval)
@@ -345,7 +344,7 @@ def analyze_okx_coin(item, okx_interval, stop_mult, target_mult):
     frame.loc[frame.index[-1], "quote_volume"] /= fraction
     indicators = technical(frame)
     if indicators is None:
-        raise ValueError("Yeterli teknik mum verisi yok")
+        raise ValueError(f"{inst} için teknik analiz hesaplanamadı: {len(frame)} mum var; en az 205 geçerli mum ve hesaplanabilir RSI/ADX/hacim gerekli. Yeni listelenen coinlerde sinyal üretilemez.")
     fib = {}
     for tf in ("1h", "4h"):
         fib_frame = frame if tf == okx_interval else okx_candles(inst, tf)
@@ -395,6 +394,7 @@ def analyze_okx_coin(item, okx_interval, stop_mult, target_mult):
     return {**item.to_dict(), **indicators, **levels, **scenario, **derivative}
 
 
+@st.fragment(run_every="20s")
 def live_radar():
         st.subheader("OKX USDT Perpetual — LONG / SHORT Radar")
         st.caption("OKX canlı ticker ve açık perpetual mumundan geçici LONG/SHORT adayları. Hesap bağlanmaz, emir gönderilmez.")
