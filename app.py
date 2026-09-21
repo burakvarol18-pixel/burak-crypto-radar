@@ -1,4 +1,4 @@
-"""BURAK CRYPTO RADAR V4.3 — OKX LIVE USDT perpetual market research only.
+"""BURAK CRYPTO RADAR V4.4 — OKX LIVE USDT perpetual market research only.
 No orders, account access, or leverage execution.
 """
 import numpy as np
@@ -7,7 +7,7 @@ import plotly.graph_objects as go
 import requests
 import streamlit as st
 
-st.set_page_config(page_title="Burak Crypto Radar V4.3 — OKX LIVE", page_icon="📡", layout="wide")
+st.set_page_config(page_title="Burak Crypto Radar V4.4 — OKX LIVE", page_icon="📡", layout="wide")
 HEADERS = {"User-Agent": "BurakCryptoRadar/1.0", "accept": "application/json"}
 STABLE = {"usdt", "usdc", "dai", "fdusd", "tusd", "usde", "usdd", "pyusd", "frax"}
 
@@ -394,7 +394,6 @@ def analyze_okx_coin(item, okx_interval, stop_mult, target_mult):
     return {**item.to_dict(), **indicators, **levels, **scenario, **derivative}
 
 
-@st.fragment(run_every="300s")
 def live_radar():
         st.subheader("OKX USDT Perpetual — LONG / SHORT Radar")
         st.caption("OKX canlı ticker ve açık perpetual mumundan geçici LONG/SHORT adayları. Hesap bağlanmaz, emir gönderilmez.")
@@ -500,7 +499,16 @@ def live_radar():
 
 
 with radar_tab:
-    live_radar()
+    refresh_minutes = st.selectbox(
+        "⏱️ Otomatik yenileme aralığı",
+        options=[1, 2, 3, 5, 10, 15, 30],
+        index=3,
+        format_func=lambda n: f"{n} dakika",
+        key="radar_refresh_minutes",
+        help="Ana radar ve kendi coin analiz alanı bu aralıkla yeniden hesaplanır. Değişiklik seçildiğinde uygulanır."
+    )
+    st.caption(f"Otomatik yenileme: {refresh_minutes} dakikada bir. Sayfa açık kaldığı sürece çalışır.")
+    st.fragment(run_every=f"{refresh_minutes * 60}s")(live_radar)()
 
 
 with futures:
@@ -518,7 +526,7 @@ with futures:
 
 
 with methodology:
-    st.markdown("""**V4 canlı aday sinyaller:** OKX USDT perpetual ticker fiyatı ve oluşmakta olan mum (confirm=0). Fiyat/mum önbelleği 15 saniye, fonlama ve OI 60 saniye. Açık sekme yaklaşık 20 saniyede yenilenir. Ticker UTC, OKX fiyat zaman damgasıdır. REST veri kaynakları tam eşzamanlı olmayabilir.
+    st.markdown("""**V4 canlı aday sinyaller:** OKX USDT perpetual ticker fiyatı ve oluşmakta olan mum (confirm=0). Fiyat/mum önbelleği 15 saniye, fonlama ve OI 60 saniye. Açık sekme seçtiğin otomatik yenileme aralığında yenilenir. Ticker UTC, OKX fiyat zaman damgasıdır. REST veri kaynakları tam eşzamanlı olmayabilir.
 
 **Göstergeler:** EMA, MACD, RSI, ADX ve ATR için önceki mumlar matematiksel olarak gereklidir; geçmiş performans testi yapılmaz. Açık mum hacmi geçen süreye göre yaklaşık tam mum hacmine ölçeklenir (ilk %10 için tahmin özellikle belirsizdir). Mum kapanmadan sinyal değişebilir. ATR stop/hedef canlı ticker fiyatına göre varsayımsaldır, gerçek emir gerçekleşmesi değildir. Funding, spread, komisyon, kayma, kaldıraç ve likidasyon dahil değildir. Otomatik emir gönderilmez.
 """)
