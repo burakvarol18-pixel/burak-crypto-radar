@@ -1,4 +1,4 @@
-"""BURAK CRYPTO RADAR V5.0 — OKX LIVE USDT perpetual market research only.
+"""BURAK CRYPTO RADAR V5.1 — OKX LIVE USDT perpetual market research only.
 No orders, account access, or leverage execution.
 """
 import numpy as np
@@ -7,7 +7,7 @@ import plotly.graph_objects as go
 import requests
 import streamlit as st
 
-st.set_page_config(page_title="Burak Crypto Radar V5.0 — OKX LIVE", page_icon="📡", layout="wide")
+st.set_page_config(page_title="Burak Crypto Radar V5.1 — OKX LIVE", page_icon="📡", layout="wide")
 HEADERS = {"User-Agent": "BurakCryptoRadar/1.0", "accept": "application/json"}
 STABLE = {"usdt", "usdc", "dai", "fdusd", "tusd", "usde", "usdd", "pyusd", "frax"}
 
@@ -317,7 +317,7 @@ def okx_derivatives(inst_id):
 
 
 
-st.title("📡 BURAK CRYPTO RADAR V5 — OKX")
+st.title("📡 BURAK CRYPTO RADAR V5.1 — OKX")
 st.caption("Yalnızca OKX USDT perpetual verileri • LONG / SHORT araştırma sinyalleri • Otomatik emir göndermez")
 with st.sidebar:
     st.header("OKX veri ayarları")
@@ -326,7 +326,7 @@ with st.sidebar:
         st.cache_data.clear()
         st.rerun()
 
-radar_tab, whale_tab, futures, methodology = st.tabs(["🟢🔴 OKX Perpetual Radar", "🐋 OKX Balina / Akıllı Para", "⚠️ Vadeli risk ekranı", "ℹ️ Metodoloji"])
+radar_tab, whale_tab, market_tab, futures, methodology = st.tabs(["🟢🔴 OKX Perpetual Radar", "🐋 OKX Balina / Akıllı Para", "🌍 OKX Piyasa Yönü", "⚠️ Vadeli risk ekranı", "ℹ️ Metodoloji"])
 
 def analyze_okx_coin(item, okx_interval, stop_mult, target_mult):
     inst = item["Parite"]
@@ -655,6 +655,166 @@ with whale_tab:
                                  format_func=lambda x: f"{x} dakika", key="whale_refresh")
     st.fragment(run_every=f"{whale_refresh * 60}s")(whale_radar)()
 
+
+
+
+def market_trend_reading(df, symbol, timeframe):
+    """Descriptive EMA / MACD / ADX / RSI snapshot from completed OKX candles."""
+    closed = df[df["confirm"] == "1"].copy()
+    if len(closed) < 205:
+        raise ValueError(f"{symbol}: en az 205 kapanmış mum gerekli")
+    c, h, l = closed.close, closed.high, closed.low
+    e20 = c.ewm(span=20, adjust=False).mean()
+    e50 = c.ewm(span=50, adjust=False).mean()
+    e200 = c.ewm(span=200, adjust=False).mean()
+    macd = c.ewm(span=12, adjust=False).mean() - c.ewm(span=26, adjust=False).mean()
+    sig = macd.ewm(span=9, adjust=False).mean()
+    delta = c.diff()
+    gain = delta.clip(lower=0).ewm(alpha=1/14, adjust=False).mean()
+    loss = (-delta.clip(upper=0)).ewm(alpha=1/14, adjust=False).mean()
+    rsi = 100 - 100 / (1 + gain / loss.replace(0, np.nan))
+    up, down = h.diff(), -l.diff()
+    pdm = up.where((up > down) & (up > 0), 0.)
+    mdm = down.where((down > up) & (down > 0), 0.)
+    tr = pd.concat([h-l, (h-c.shift()).abs(), (l-c.shift()).abs()], axis=1).max(axis=1)
+    atr = tr.ewm(alpha=1/14, adjust=False).mean().replace(0, np.nan)
+    pdi = 100 * pdm.ewm(alpha=1/14, adjust=False).mean() / atr
+    mdi = 100 * mdm.ewm(alpha=1/14, adjust=False).mean() / atr
+    dx = 100 * (pdi-mdi).abs() / (pdi+mdi).replace(0, np.nan)
+    adx = dx.ewm(alpha=1/14, adjust=False).mean()
+    price = float(c.iloc[-1])
+    r, a = float(rsi.iloc[-1]), float(adx.iloc[-1])
+    if not all(np.isfinite(x) for x in (price, r, a, float(pdi.iloc[-1]), float(mdi.iloc[-1]))):
+        raise ValueError(f"{symbol}: RSI/ADX hesaplanamadı")
+    bull = {"EMA20/50": price > e20.iloc[-1] > e50.iloc[-1],
+            "EMA200": price > e200.iloc[-1],
+            "MACD": macd.iloc[-1] > sig.iloc[-1],
+            "DI": pdi.iloc[-1] > mdi.iloc[-1],
+            "RSI": r >= 50}
+    bear = {"EMA20/50": price < e20.iloc[-1] < e50.iloc[-1],
+            "EMA200": price < e200.iloc[-1],
+            "MACD": macd.iloc[-1] < sig.iloc[-1],
+            "DI": mdi.iloc[-1] > pdi.iloc[-1],
+            "RSI": r < 50}
+    bc, sc = sum(bull.values()), sum(bear.values())
+    if a < 20:
+        state = "🟡 Yatay / zayıf trend"
+    elif bc >= 4 and bc > sc:
+        state = "🟢 Yükseliş"
+    elif sc >= 4 and sc > bc:
+        state = "🔴 Düşüş"
+    else:
+        state = "🟡 Kararsız"
+    return {"Parite": symbol, "Zaman dilimi": timeframe, "Trend": state,
+            "Yükseliş koşulu": f"{bc}/5", "Düşüş koşulu": f"{sc}/5",
+            "ADX": round(a, 1), "RSI": round(r, 1),
+            "EMA20 üstü": bool(price > e20.iloc[-1]),
+            "EMA50 üstü": bool(price > e50.iloc[-1]),
+            "EMA200 üstü": bool(price > e200.iloc[-1]),
+            "MACD yükseliş": bool(macd.iloc[-1] > sig.iloc[-1]),
+            "Kapanış ($)": price,
+            "Son kapanmış mum UTC": closed.date.iloc[-1]}
+
+
+def market_direction_summary(rows, timeframe):
+    part = pd.DataFrame([x for x in rows if x["Zaman dilimi"] == timeframe])
+    if part.empty:
+        return None
+    valid = len(part)
+    up = int((part["Trend"] == "🟢 Yükseliş").sum())
+    down = int((part["Trend"] == "🔴 Düşüş").sum())
+    btc = part.loc[part["Parite"] == "BTC-USDT-SWAP"]
+    eth = part.loc[part["Parite"] == "ETH-USDT-SWAP"]
+    btc_trend = btc.iloc[0]["Trend"] if not btc.empty else "Veri yok"
+    eth_trend = eth.iloc[0]["Trend"] if not eth.empty else "Veri yok"
+    # Breadth is equally weighted among successfully scanned, volume-selected pairs.
+    up_share, down_share = up / valid, down / valid
+    if up_share >= .60 and btc_trend == "🟢 Yükseliş" and eth_trend == "🟢 Yükseliş":
+        status = "🟢 Geniş katılımlı yükseliş"
+    elif down_share >= .60 and btc_trend == "🔴 Düşüş" and eth_trend == "🔴 Düşüş":
+        status = "🔴 Geniş katılımlı düşüş"
+    elif up_share >= .50:
+        status = "🟡 Yükseliş eğilimi / ayrışma"
+    elif down_share >= .50:
+        status = "🟡 Düşüş eğilimi / ayrışma"
+    else:
+        status = "⚪ Karışık / yatay"
+    return {"Zaman dilimi": timeframe, "Piyasa durumu": status, "BTC": btc_trend,
+            "ETH": eth_trend, "Yükselişte %": round(up_share * 100, 1),
+            "Düşüşte %": round(down_share * 100, 1),
+            "Yatay/kararsız %": round((valid-up-down) / valid * 100, 1),
+            "Analiz edilen": valid, "Ortanca ADX": round(float(part["ADX"].median()), 1)}
+
+
+def market_direction_radar():
+    st.subheader("🌍 OKX Genel Piyasa Yönü — 4 Saatlik ve Günlük")
+    st.caption("Yalnızca OKX USDT perpetual kapanmış mumları. BTC ve ETH her zaman dahil edilir; kalan pariteler yaklaşık 24 saatlik hacme göre seçilir. Ana radar ve balina radarının parametreleri değişmez.")
+    c1, c2 = st.columns(2)
+    with c1:
+        market_n = st.slider("Taranacak toplam parite", 10, 60, 30, 5, key="market_n")
+    with c2:
+        market_min = st.number_input("Altcoin minimum 24s hacim ($ milyon)", min_value=0., value=5., step=5., key="market_min")
+    try:
+        universe = okx_perpetual_universe()
+        filtered = universe[(universe["24s hacim yaklaşık ($)"] >= market_min * 1e6)
+                            & (~universe["Sembol"].str.lower().isin(STABLE))]
+        selected = list(dict.fromkeys(["BTC-USDT-SWAP", "ETH-USDT-SWAP"] +
+                                      filtered["Parite"].tolist()))[:market_n]
+        rows, errors = [], []
+        with st.spinner("OKX 4 saatlik ve günlük kapanmış mumlar taranıyor..."):
+            for inst in selected:
+                for tf in ("4h", "1d"):
+                    try:
+                        rows.append(market_trend_reading(okx_candles(inst, tf), inst, tf))
+                    except Exception as exc:
+                        errors.append(f"{inst} {tf}: {exc}")
+        summaries = [x for tf in ("4h", "1d")
+                     if (x := market_direction_summary(rows, tf)) is not None]
+        if summaries:
+            cols = st.columns(len(summaries))
+            for col, x in zip(cols, summaries):
+                with col:
+                    st.metric(f'{x["Zaman dilimi"]} piyasa', x["Piyasa durumu"])
+                    st.write(f'BTC: {x["BTC"]} · ETH: {x["ETH"]}')
+                    st.write(f'Yükselişte **%{x["Yükselişte %"]}** · Düşüşte **%{x["Düşüşte %"]}**')
+                    st.caption(f'Analiz edilen: {x["Analiz edilen"]}/{len(selected)} · Ortanca ADX: {x["Ortanca ADX"]}')
+            by_tf = {x["Zaman dilimi"]: x for x in summaries}
+            if "4h" in by_tf and "1d" in by_tf:
+                four, day = by_tf["4h"]["Piyasa durumu"], by_tf["1d"]["Piyasa durumu"]
+                if four.startswith("🟢") and day.startswith("🟢"):
+                    interpretation = "4 saatlik ve günlük yükseliş yönünde uyumlu."
+                elif four.startswith("🔴") and day.startswith("🔴"):
+                    interpretation = "4 saatlik ve günlük düşüş yönünde uyumlu."
+                elif four.startswith("🟢") and day.startswith("🔴"):
+                    interpretation = "Günlük düşüş içinde 4 saatlik toparlanma; kesin trend dönüşü değildir."
+                elif four.startswith("🔴") and day.startswith("🟢"):
+                    interpretation = "Günlük yükseliş içinde 4 saatlik düzeltme; kesin trend dönüşü değildir."
+                else:
+                    interpretation = "Zaman dilimleri veya piyasa katılımı ayrışıyor; yön teyidi sınırlı."
+                st.info("**Zaman dilimi ilişkisi:** " + interpretation)
+            st.dataframe(pd.DataFrame(summaries), hide_index=True, use_container_width=True)
+            detail = pd.DataFrame(rows)
+            st.subheader("Parite bazında trend ve piyasa genişliği")
+            st.dataframe(detail, hide_index=True, use_container_width=True)
+            st.download_button("📥 Piyasa trend CSV",
+                               detail.to_csv(index=False).encode("utf-8-sig"),
+                               "burak_okx_piyasa_trend.csv", "text/csv", key="market_csv")
+        else:
+            st.warning("Piyasa yönü için yeterli kapanmış mum alınamadı.")
+        if errors:
+            st.warning(f"{len(errors)} parite/zaman diliminde veri eksik; oranlar yalnızca başarılı analizler üzerinden hesaplandı.")
+            with st.expander("Eksik veri ayrıntıları"):
+                st.write("\n".join(errors))
+    except Exception as exc:
+        st.error(f"Piyasa yönü yüklenemedi: {type(exc).__name__}: {exc}")
+    st.caption("Trend: ADX≥20 ve 5 yön koşulundan en az 4'ü. Geniş katılımlı yön: tarananların ≥%60'ı aynı yönde, BTC ve ETH de aynı yönde. Eşikler araştırma amaçlıdır; getiri/başarı garantisi değildir. OI/funding bu sürümde piyasa yönü sınıflandırmasına dahil edilmez.")
+
+
+with market_tab:
+    market_refresh = st.selectbox("🌍 Piyasa yönü yenileme", [5, 10, 15, 30, 60],
+                                  index=1, format_func=lambda x: f"{x} dakika",
+                                  key="market_refresh")
+    st.fragment(run_every=f"{market_refresh * 60}s")(market_direction_radar)()
 
 
 with futures:
