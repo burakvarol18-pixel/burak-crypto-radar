@@ -11,7 +11,7 @@ import plotly.graph_objects as go
 import requests
 import streamlit as st
 
-st.set_page_config(page_title="Burak Crypto Radar", page_icon="📡", layout="wide")
+st.set_page_config(page_title="Burak Crypto Radar V2", page_icon="📡", layout="wide")
 CG = "https://api.coingecko.com/api/v3"
 HEADERS = {"User-Agent": "BurakCryptoRadar/1.0", "accept": "application/json"}
 STABLE = {"usdt", "usdc", "dai", "fdusd", "tusd", "usde", "usdd", "pyusd", "frax"}
@@ -129,6 +129,51 @@ def technical(df):
             "EMA200 üstü": bool(c > e200.iloc[-1]), "Kapanış": c}
 
 
+def levels_and_risks(df, row):
+    """Descriptive price zones from completed candles; not trade recommendations."""
+    if df is None or len(df) < 205:
+        return {}
+    close = df["close"]
+    high = df["high"]
+    low = df["low"]
+    last = float(close.iloc[-1])
+    ema20 = float(close.ewm(span=20, adjust=False).mean().iloc[-1])
+    ema50 = float(close.ewm(span=50, adjust=False).mean().iloc[-1])
+    ema200 = float(close.ewm(span=200, adjust=False).mean().iloc[-1])
+    support = float(low.iloc[-21:-1].min())
+    resistance = float(high.iloc[-21:-1].max())
+    tr = pd.concat([high-low, (high-close.shift()).abs(),
+                    (low-close.shift()).abs()], axis=1).max(axis=1)
+    atr = float(tr.ewm(alpha=1/14, adjust=False).mean().iloc[-1])
+    mc = row.get("market_cap")
+    fdv = row.get("fully_diluted_valuation")
+    circulating = row.get("circulating_supply")
+    total = row.get("total_supply")
+    flags = []
+    rsi_delta = close.diff()
+    gain = rsi_delta.clip(lower=0).ewm(alpha=1/14, adjust=False).mean()
+    loss = (-rsi_delta.clip(upper=0)).ewm(alpha=1/14, adjust=False).mean()
+    rsi = float((100 - 100 / (1 + gain / loss.replace(0, np.nan))).iloc[-1])
+    if np.isfinite(rsi) and rsi >= 70:
+        flags.append("RSI ≥70: kısa vadeli aşırı alım göstergesi")
+    if np.isfinite(rsi) and rsi <= 30:
+        flags.append("RSI ≤30: güçlü satış baskısı göstergesi")
+    if pd.notna(mc) and mc > 0 and pd.notna(fdv) and fdv / mc >= 2:
+        flags.append("FDV/MC ≥2: arz seyrelmesi açısından incele")
+    if pd.notna(circulating) and pd.notna(total) and total > 0 and circulating / total < .5:
+        flags.append("Dolaşımdaki arz toplam arzın <%50'si")
+    if last < ema200:
+        flags.append("Fiyat EMA200 altında")
+    if pd.notna(row.get("total_volume")) and row["total_volume"] < 10e6:
+        flags.append("24s küresel hacim <$10m")
+    return {"EMA20 ($)": ema20, "EMA50 ($)": ema50, "EMA200 ($)": ema200,
+            "20 mum destek ($)": support, "20 mum direnç ($)": resistance,
+            "ATR14 ($)": atr, "ATR14 %": 100 * atr / last if last > 0 else np.nan,
+            "Dolaşım %": 100 * circulating / total if pd.notna(circulating)
+            and pd.notna(total) and total > 0 else np.nan,
+            "Risk notları": " | ".join(flags) if flags else "Tanımlı risk eşiği tetiklenmedi"}
+
+
 def fundamental(row):
     mc, fdv, vol = row.get("market_cap"), row.get("fully_diluted_valuation"), row.get("total_volume")
     if pd.isna(mc) or mc <= 0 or pd.isna(fdv) or fdv <= 0 or pd.isna(vol):
@@ -142,7 +187,7 @@ def fundamental(row):
     return cap_points + dilution_points + turnover_points + liquid_points
 
 
-st.title("📡 BURAK CRYPTO RADAR")
+st.title("📡 BURAK CRYPTO RADAR V2")
 st.caption("Piyasa araştırması • Spot aday taraması ve ayrı vadeli risk görünümü • Emir göndermez")
 with st.sidebar:
     st.header("Tarama ayarları")
@@ -199,17 +244,22 @@ with st.spinner("Seçili adaylar için teknik veriler hesaplanıyor..."):
         st.warning(f"Kraken spot sembolleri alınamadı; teknik analiz boş kalabilir: {exc}")
     tech_rows = []
     errors = 0
+    unmatched = 0
     for _, row in selected.head(limit).iterrows():
         sym = str(row.symbol).upper()
         if sym not in symbols:
+            unmatched += 1
             continue
         try:
-            t = technical(candles(symbols[sym][0], interval))
+            price_df = candles(symbols[sym][0], interval)
+            t = technical(price_df)
             if t:
-                tech_rows.append({"id": row.id, **t})
+                tech_rows.append({"id": row.id, **t, **levels_and_risks(price_df, row)})
         except Exception:
             errors += 1
     tech = pd.DataFrame(tech_rows)
+if unmatched:
+    st.info(f"{unmatched} aday için Kraken USD/USDT spot paritesi bulunamadı; temel verileri görüntülenebilir.")
 if errors:
     st.warning(f"{errors} sembolün teknik verisi alınamadı. Kraken erişimi, veri geçmişi veya istek limiti etkili olabilir.")
 
@@ -224,7 +274,7 @@ with spot:
     st.subheader("Piyasa ön elemesi ve teknik durum")
     st.caption("Birleşik skor yalnızca iki veri grubu mevcutsa hesaplanır. Eksik teknik veri sıfır sayılmaz.")
     cols = ["name", "symbol", "market_cap", "fully_diluted_valuation", "FDV/MC", "total_volume", "Hacim/MC %", "Temel ön skor"]
-    cols += [x for x in ["Teknik skor", "Birleşik araştırma skoru", "RSI", "ADX", "Hacim katı"] if x in view]
+    cols += [x for x in ["Teknik skor", "Birleşik araştırma skoru", "RSI", "ADX", "Hacim katı", "Dolaşım %", "EMA20 ($)", "EMA50 ($)", "20 mum destek ($)", "20 mum direnç ($)", "ATR14 %", "Risk notları"] if x in view]
     st.dataframe(view[cols].rename(columns={"name":"Coin", "symbol":"Sembol", "market_cap":"MC ($)",
                     "fully_diluted_valuation":"FDV ($)", "total_volume":"24s hacim ($)"}),
                  hide_index=True, use_container_width=True)
@@ -243,7 +293,19 @@ with spot:
                 for n in (20, 50, 200):
                     fig.add_trace(go.Scatter(x=chart.date, y=chart.close.ewm(span=n, adjust=False).mean(),
                                              name=f"EMA {n}", mode="lines"))
+                if "20 mum destek ($)" in row and pd.notna(row["20 mum destek ($)"]):
+                    fig.add_hline(y=float(row["20 mum destek ($)"]), line_dash="dash",
+                                  annotation_text="20 mum destek")
+                    fig.add_hline(y=float(row["20 mum direnç ($)"]), line_dash="dash",
+                                  annotation_text="20 mum direnç")
                 fig.update_layout(height=520, xaxis_rangeslider_visible=False, template="plotly_dark")
+                st.caption("Destek/direnç önceki 20 tamamlanmış mumdan hesaplanır; "
+                           "EMA seviyeleri olası izleme bölgeleridir, alım emri değildir.")
+                st.dataframe(pd.DataFrame([{"Gösterge": k, "Değer": row[k]}
+                    for k in ["EMA20 ($)", "EMA50 ($)", "EMA200 ($)",
+                              "20 mum destek ($)", "20 mum direnç ($)",
+                              "ATR14 ($)", "ATR14 %", "Dolaşım %", "Risk notları"]
+                    if k in row.index]), hide_index=True, use_container_width=True)
                 st.plotly_chart(fig, use_container_width=True)
             except Exception as exc:
                 st.warning(f"Grafik alınamadı: {exc}")
@@ -252,6 +314,7 @@ with spot:
 
 with futures:
     st.subheader("Kaldıraçlı işlemlerde senaryo ve risk")
+    st.info("V2 vadeli risk ekranı hesaplama amaçlıdır. Fonlama oranı ve açık pozisyon (OI) henüz canlı bağlanmadı; bunlar spot verilerinden türetilmez.")
     st.warning("Bu ekran vadeli işlem sinyali üretmez ve pozisyon açmaz. Spot piyasa verileri vadeli piyasa fonlama, açık pozisyon veya likidasyon verisi yerine geçmez.")
     margin = st.number_input("Teminat ($)", min_value=1., value=100., step=25.)
     leverage = st.slider("Kaldıraç", 1, 20, 5)
@@ -263,7 +326,7 @@ with futures:
     st.caption("Komisyon, fonlama, slippage, bakım teminatı ve borsaya özgü likidasyon kuralları dahil değildir. Likidasyon bu basit hesaplamadan daha önce gerçekleşebilir.")
 
 with methodology:
-    st.markdown("""**Veri kaynakları:** CoinGecko `/coins/markets` (market cap, FDV, 24 saatlik hacim); Kraken public `/AssetPairs` ve `/OHLC` (OHLCV). Kraken spot USD/USDT paritesi bulunmayan coinlerde teknik skor boş kalır. CoinGecko ve Kraken farklı fiyat/arz anlık görüntüleri sunabilir.
+    st.markdown("""**V2 yenilikleri:** Son 20 tamamlanmış mumun destek/direnç seviyeleri, EMA20/50/200, ATR14 volatilitesi, dolaşımdaki arz oranı ve açıklanabilir risk notları. Bunlar fiyat hedefi veya işlem sinyali değildir.\n\n**Veri kaynakları:** CoinGecko `/coins/markets` (market cap, FDV, 24 saatlik hacim); Kraken public `/AssetPairs` ve `/OHLC` (OHLCV). Kraken spot USD/USDT paritesi bulunmayan coinlerde teknik skor boş kalır. CoinGecko ve Kraken farklı fiyat/arz anlık görüntüleri sunabilir.
 
 **Temel ön skor (0–100):** Market cap bandı 25, FDV/MC 25, hacim/MC 25, mutlak hacim 25. Bunlar kullanıcı tarafından değiştirilebilir filtrelere ek, sabit ve açıklanabilir araştırma puanlarıdır.
 
@@ -271,7 +334,7 @@ with methodology:
 
 **Birleşik araştırma skoru:** %60 temel ön skor + %40 teknik skor. Bu, 10x/20x olasılığı veya getiri tahmini değildir; geçmiş performans testi yapılmamıştır.
 
-**V1 kapsam dışı:** Token unlock takvimi, gerçek emir defteri derinliği, TVL, protokol geliri, kullanıcı sayısı, narrative/catalyst doğrulaması, fonlama ve açık pozisyon. Bu alanlara veri uydurulmaz. Büyük fiyat düşüşleri ve sermayenin tamamının kaybı mümkündür.
+**V2 kapsam dışı:** Doğrulanmış tarihli token unlock takvimi, gerçek emir defteri derinliği, TVL, protokol geliri, kullanıcı sayısı, narrative/catalyst doğrulaması, canlı fonlama ve açık pozisyon. Dolaşım yüzdesi token unlock tarihi veya miktarı değildir. Bu alanlara veri uydurulmaz. Büyük fiyat düşüşleri ve sermayenin tamamının kaybı mümkündür.
 
 **Tarama sıklığı:** Streamlit önbelleği 1 saat; uygulama açıkken veya kullanıcı tekrar açtığında veri yenilenir. Sunucu arka planda sürekli tarama veya bildirim gönderme yapmaz.
 """)
