@@ -1,4 +1,4 @@
-"""BURAK CRYPTO RADAR V5.1 — OKX LIVE USDT perpetual market research only.
+"""BURAK CRYPTO RADAR V5.2 — OKX LIVE USDT perpetual market research only.
 No orders, account access, or leverage execution.
 """
 import numpy as np
@@ -7,7 +7,7 @@ import plotly.graph_objects as go
 import requests
 import streamlit as st
 
-st.set_page_config(page_title="Burak Crypto Radar V5.1 — OKX LIVE", page_icon="📡", layout="wide")
+st.set_page_config(page_title="Burak Crypto Radar V5.2 — OKX LIVE", page_icon="📡", layout="wide")
 HEADERS = {"User-Agent": "BurakCryptoRadar/1.0", "accept": "application/json"}
 STABLE = {"usdt", "usdc", "dai", "fdusd", "tusd", "usde", "usdd", "pyusd", "frax"}
 
@@ -317,7 +317,7 @@ def okx_derivatives(inst_id):
 
 
 
-st.title("📡 BURAK CRYPTO RADAR V5.1 — OKX")
+st.title("📡 BURAK CRYPTO RADAR V5.2 — OKX")
 st.caption("Yalnızca OKX USDT perpetual verileri • LONG / SHORT araştırma sinyalleri • Otomatik emir göndermez")
 with st.sidebar:
     st.header("OKX veri ayarları")
@@ -792,6 +792,59 @@ def market_direction_radar():
                 else:
                     interpretation = "Zaman dilimleri veya piyasa katılımı ayrışıyor; yön teyidi sınırlı."
                 st.info("**Zaman dilimi ilişkisi:** " + interpretation)
+            st.subheader("💸 OKX fonlama oranları")
+            st.caption("Anlık OKX USDT perpetual funding oranlarıdır; pozitif değer LONG tarafının, negatif değer SHORT tarafının ödeme yaptığı olağan durumu gösterir. Fonlama periyodu sözleşmeye göre değişebilir.")
+            funding_rows, funding_errors = [], []
+            for inst in selected:
+                try:
+                    funding_data = okx_public("/api/v5/public/funding-rate", {"instId": inst})
+                    if funding_data:
+                        entry = funding_data[0]
+                        rate = float(entry["fundingRate"]) * 100
+                        next_ts = entry.get("nextFundingTime")
+                        funding_rows.append({"Parite": inst, "Funding %": round(rate, 5),
+                                             "Sonraki fonlama UTC": pd.to_datetime(int(next_ts), unit="ms", utc=True) if next_ts else pd.NaT})
+                except Exception as exc:
+                    funding_errors.append(f"{inst}: {exc}")
+            if funding_rows:
+                funding_df = pd.DataFrame(funding_rows)
+                fc1, fc2, fc3 = st.columns(3)
+                for col, inst, label in ((fc1, "BTC-USDT-SWAP", "BTC funding"),
+                                          (fc2, "ETH-USDT-SWAP", "ETH funding")):
+                    matched = funding_df.loc[funding_df["Parite"] == inst, "Funding %"]
+                    col.metric(label, f"{matched.iloc[0]:+.5f}%" if not matched.empty else "Veri yok")
+                fc3.metric("Taranan paritelerde ortanca funding", f'{funding_df["Funding %"].median():+.5f}%')
+                st.dataframe(funding_df, hide_index=True, use_container_width=True)
+            else:
+                st.warning("OKX fonlama verisi alınamadı.")
+            if funding_errors:
+                st.caption(f"{len(funding_errors)} paritenin fonlama verisi eksik.")
+
+            st.subheader("😨 OKX piyasa korku / iştah göstergesi")
+            st.caption("Resmî Crypto Fear & Greed Index DEĞİLDİR. Yalnızca OKX verileriyle hesaplanan, 0–100 arası deneysel piyasa duyarlılığı göstergesidir.")
+            day_data = pd.DataFrame([x for x in rows if x["Zaman dilimi"] == "1d"])
+            if len(day_data) >= 5:
+                bullish_share = float((day_data["Trend"] == "🟢 Yükseliş").mean())
+                bearish_share = float((day_data["Trend"] == "🔴 Düşüş").mean())
+                neutral_share = max(0., 1. - bullish_share - bearish_share)
+                breadth_score = 100 * (bullish_share + neutral_share * .5)
+                rsi_score = float(day_data["RSI"].clip(0, 100).median())
+                fear_score = round(.6 * breadth_score + .4 * rsi_score)
+                if fear_score < 20:
+                    mood = "Yoğun korku / satış baskısı"
+                elif fear_score < 40:
+                    mood = "Korku / zayıf piyasa"
+                elif fear_score <= 60:
+                    mood = "Dengeli / kararsız"
+                elif fear_score <= 80:
+                    mood = "Yükseliş iştahı"
+                else:
+                    mood = "Yoğun yükseliş iştahı"
+                st.metric("OKX duyarlılık puanı (0–100)", f"{fear_score}/100", mood)
+                st.progress(fear_score / 100)
+                st.caption(f"Günlük piyasa genişliği %60 + günlük RSI14 ortancası %40; {len(day_data)} analiz edilebilir parite. Fonlama, bu puana dahil edilmez; ayrı gösterilir. Bu bir anket veya yatırımcı psikolojisinin doğrudan ölçümü değildir.")
+            else:
+                st.warning("OKX duyarlılık puanı için en az 5 günlük parite analizi gerekli.")
             st.dataframe(pd.DataFrame(summaries), hide_index=True, use_container_width=True)
             detail = pd.DataFrame(rows)
             st.subheader("Parite bazında trend ve piyasa genişliği")
