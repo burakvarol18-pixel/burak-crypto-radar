@@ -272,6 +272,29 @@ with st.sidebar:
     interval = st.selectbox("Teknik zaman dilimi", ["1d", "4h", "1h"], index=0)
     limit = st.slider("Teknik analiz yapılacak aday sayısı", 5, 60, 25, 5)
     st.caption("CoinGecko önbelleği 1 saat; Kraken mumları 5 dakika. Sinyaller son kapanmış muma göredir, anlık fiyat akışı değildir.")
+    with st.expander("🧪 Binance bağlantı testi"):
+        st.caption("Test, bu Streamlit sunucusundan yapılır; API anahtarı veya emir yetkisi gerekmez.")
+        if st.button("Binance Spot ve Futures erişimini test et"):
+            checks = [
+                ("Spot ping", "https://api.binance.com/api/v3/ping"),
+                ("Futures ping", "https://fapi.binance.com/fapi/v1/ping"),
+                ("Futures sunucu saati", "https://fapi.binance.com/fapi/v1/time"),
+                ("Futures pariteler", "https://fapi.binance.com/fapi/v1/exchangeInfo"),
+                ("Futures BTCUSDT mum", "https://fapi.binance.com/fapi/v1/klines?symbol=BTCUSDT&interval=1h&limit=2"),
+                ("Futures fonlama", "https://fapi.binance.com/fapi/v1/premiumIndex?symbol=BTCUSDT"),
+                ("Futures açık pozisyon", "https://fapi.binance.com/fapi/v1/openInterest?symbol=BTCUSDT"),
+                ("Kraken kontrol", "https://api.kraken.com/0/public/Time"),
+            ]
+            for label, url in checks:
+                try:
+                    response = requests.get(url, headers=HEADERS, timeout=7)
+                    status = response.status_code
+                    if status == 200:
+                        st.success(f"{label}: HTTP 200 — erişim var")
+                    else:
+                        st.error(f"{label}: HTTP {status} — {response.text[:180]}")
+                except requests.exceptions.RequestException as exc:
+                    st.error(f"{label}: bağlantı hatası — {type(exc).__name__}: {str(exc)[:130]}")
     if st.button("🔄 Önbelleği temizle ve yeniden tara"):
         st.cache_data.clear()
         st.rerun()
