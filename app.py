@@ -1,4 +1,4 @@
-"""BURAK CRYPTO RADAR V3 — OKX USDT perpetual market research only.
+"""BURAK CRYPTO RADAR V3.1 — OKX USDT perpetual market research only.
 No orders, account access, or leverage execution.
 """
 import numpy as np
@@ -7,7 +7,7 @@ import plotly.graph_objects as go
 import requests
 import streamlit as st
 
-st.set_page_config(page_title="Burak Crypto Radar V3 — OKX", page_icon="📡", layout="wide")
+st.set_page_config(page_title="Burak Crypto Radar V3.1 — OKX", page_icon="📡", layout="wide")
 HEADERS = {"User-Agent": "BurakCryptoRadar/1.0", "accept": "application/json"}
 STABLE = {"usdt", "usdc", "dai", "fdusd", "tusd", "usde", "usdd", "pyusd", "frax"}
 
@@ -124,6 +124,25 @@ def levels_and_risks(df, row):
             and pd.notna(total) and total > 0 else np.nan,
             "Risk notları": " | ".join(flags) if flags else "Tanımlı risk eşiği tetiklenmedi"}
 
+
+
+def atr_scenario(indicators, levels, stop_mult, target_mult):
+    direction = indicators.get("Sinyal")
+    entry = float(indicators.get("Kapanış", np.nan))
+    atr = float(levels.get("ATR14 ($)", np.nan))
+    blank = {"Referans giriş ($)": np.nan, "Stop ($)": np.nan, "Hedef ($)": np.nan,
+             "Stop uzaklık %": np.nan, "Hedef uzaklık %": np.nan, "Risk/Ödül": np.nan}
+    if direction not in ("🟢 LONG", "🔴 SHORT") or not np.isfinite(entry) or not np.isfinite(atr) or entry <= 0 or atr <= 0:
+        return blank
+    sign = 1 if direction == "🟢 LONG" else -1
+    stop = entry - sign * stop_mult * atr
+    target = entry + sign * target_mult * atr
+    if stop <= 0 or target <= 0:
+        return blank
+    return {"Referans giriş ($)": entry, "Stop ($)": stop, "Hedef ($)": target,
+            "Stop uzaklık %": 100 * stop_mult * atr / entry,
+            "Hedef uzaklık %": 100 * target_mult * atr / entry,
+            "Risk/Ödül": target_mult / stop_mult}
 
 
 def backtest_directional(df, hold_bars=4, fee_pct=.1, slip_pct=.05):
@@ -270,6 +289,12 @@ with radar_tab:
     with p3:
         okx_min_vol = st.number_input("En düşük yaklaşık 24s hacim ($ milyon)", min_value=0., value=5., step=5., key="okx_min_vol")
     st.info("Bu ekran CoinGecko market cap filtresinden bağımsızdır: OKX'teki USDT perpetual pariteleri yaklaşık 24 saatlik işlem hacmine göre tarar.")
+    a1, a2 = st.columns(2)
+    with a1:
+        stop_mult = st.slider("ATR stop katsayısı", 0.5, 5.0, 1.5, 0.25)
+    with a2:
+        target_mult = st.slider("ATR hedef katsayısı", 0.5, 8.0, 3.0, 0.25)
+    st.caption("ATR seviyeleri son kapanmış mum kapanışını referans alır; canlı giriş fiyatı veya emir değildir.")
     try:
         universe = okx_perpetual_universe()
         universe = universe[(universe["24s hacim yaklaşık ($)"] >= okx_min_vol * 1e6)
@@ -290,9 +315,10 @@ with radar_tab:
                         derivative = okx_derivatives(inst)
                     except Exception:
                         derivative = {"Funding %": np.nan, "OI ($)": np.nan}
+                    levels = levels_and_risks(frame, {})
+                    scenario = atr_scenario(indicators, levels, stop_mult, target_mult)
                     okx_rows.append({**item.to_dict(), **indicators,
-                                     **levels_and_risks(frame, {}),
-                                     **derivative})
+                                     **levels, **scenario, **derivative})
                 except Exception:
                     okx_fail += 1
         if okx_fail:
@@ -311,6 +337,8 @@ with radar_tab:
             r2.metric("🔴 SHORT", int(counts.get("🔴 SHORT", 0)))
             r3.metric("⚪ BEKLE", int(counts.get("⚪ BEKLE", 0)))
             show = ["Parite", "Sinyal", "Sinyal mumu", "Fiyat ($)",
+                    "Referans giriş ($)", "Stop ($)", "Hedef ($)",
+                    "Stop uzaklık %", "Hedef uzaklık %", "Risk/Ödül",
                     "24s hacim yaklaşık ($)", "RSI", "ADX", "Hacim katı",
                     "Funding %", "OI ($)", "20 mum destek ($)",
                     "20 mum direnç ($)", "ATR14 %", "Risk notları"]
@@ -339,6 +367,15 @@ with radar_tab:
                 okx_slip = st.number_input("Tek yön fiyat kayması (%)", min_value=0.,
                                            max_value=2., value=.05, step=.01, key="okx_slip")
             hist = okx_candles(selected_inst, okx_interval)
+            selected_signal = radar.loc[radar["Parite"] == selected_inst].iloc[0]
+            if pd.notna(selected_signal["Stop ($)"]):
+                z1, z2, z3 = st.columns(3)
+                z1.metric("Referans giriş ($)", f'{selected_signal["Referans giriş ($)"]:.8g}')
+                z2.metric("ATR stop ($)", f'{selected_signal["Stop ($)"]:.8g}')
+                z3.metric("ATR hedef ($)", f'{selected_signal["Hedef ($)"]:.8g}')
+                st.caption(f'Risk/Ödül: 1:{selected_signal["Risk/Ödül"]:.2f} | Stop mesafesi: %{selected_signal["Stop uzaklık %"]:.2f} | Hedef mesafesi: %{selected_signal["Hedef uzaklık %"]:.2f}')
+            else:
+                st.info("BEKLE: ATR stop/hedef senaryosu oluşturulmadı.")
             fig_okx = go.Figure(go.Candlestick(x=hist.date, open=hist.open,
                                                high=hist.high, low=hist.low,
                                                close=hist.close, name=selected_inst))
@@ -346,9 +383,14 @@ with radar_tab:
                 fig_okx.add_trace(go.Scatter(x=hist.date,
                     y=hist.close.ewm(span=n, adjust=False).mean(),
                     mode="lines", name=f"EMA {n}"))
+            if pd.notna(selected_signal["Stop ($)"]):
+                fig_okx.add_hline(y=float(selected_signal["Referans giriş ($)"]), line_dash="dot", annotation_text="Referans giriş")
+                fig_okx.add_hline(y=float(selected_signal["Stop ($)"]), line_dash="dash", line_color="red", annotation_text="ATR stop")
+                fig_okx.add_hline(y=float(selected_signal["Hedef ($)"]), line_dash="dash", line_color="green", annotation_text="ATR hedef")
             fig_okx.update_layout(height=480, xaxis_rangeslider_visible=False,
                                    template="plotly_dark")
             st.plotly_chart(fig_okx, use_container_width=True)
+            st.caption("Geçmiş test sabit mum sonunda çıkar; ATR stop/hedef tetiklenmesini test etmez.")
             past = backtest_directional(hist, okx_hold, okx_fee, okx_slip)
             st.caption(f"OKX geçmiş veri: {hist.date.iloc[0]:%Y-%m-%d %H:%M} – {hist.date.iloc[-1]:%Y-%m-%d %H:%M} UTC ({len(hist)} kapanmış mum). İlk 205 mum indikatör ısınmasıdır.")
             if past.empty:
@@ -390,7 +432,7 @@ with futures:
 
 
 with methodology:
-    st.markdown("""**Veri kaynağı:** Yalnızca OKX public API: USDT perpetual (SWAP) instruments, tickers, candles, funding-rate ve open-interest. CoinGecko, Kraken ve Binance piyasa verileri kullanılmaz. API anahtarı veya hesap bağlantısı gerekmez.
+    st.markdown("""**V3.1 ATR senaryosu:** LONG için son kapanmış mum kapanışı eksi ATR14 × stop katsayısı ve artı ATR14 × hedef katsayısı; SHORT için tersidir. Yalnızca aktif LONG/SHORT etiketlerinde gösterilir. Referans giriş gerçek emir gerçekleşmesi değildir. Mevcut geçmiş test ATR stop/hedef çıkışlarını modellemez; komisyon, fonlama ve likidasyon bu senaryoda hesaplanmaz.\n\n**Veri kaynağı:** Yalnızca OKX public API: USDT perpetual (SWAP) instruments, tickers, candles, funding-rate ve open-interest. CoinGecko, Kraken ve Binance piyasa verileri kullanılmaz. API anahtarı veya hesap bağlantısı gerekmez.
 
 **Sinyal koşulları:** LONG için kapanış > EMA20 > EMA50, MACD > sinyal çizgisi, +DI > -DI, ADX ≥20, RSI 45–68 ve son kapanmış mumun hacmi önceki 20 mum ortalamasının ≥1,2 katı. SHORT için kapanış < EMA20 < EMA50, MACD < sinyal çizgisi, -DI > +DI, ADX ≥20, RSI 32–55 ve aynı hacim koşulu. Diğer durumlar BEKLE. Teknik göstergeler kapanmış perpetual mumlarından hesaplanır.
 
