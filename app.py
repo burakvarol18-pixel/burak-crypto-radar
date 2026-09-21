@@ -374,6 +374,45 @@ def live_radar():
                         if indicators is None:
                             okx_fail += 1
                             continue
+                        fib = {}
+                        for tf in ("1h", "4h"):
+                            fib_frame = frame if tf == okx_interval else okx_candles(inst, tf)
+                            if fib_frame.iloc[-1]["confirm"] != "0":
+                                raise ValueError("Fibonacci için açık mum yok")
+                            for side in ("LONG", "SHORT"):
+                                fib[(tf, side)] = fibonacci_check(fib_frame, live_price, side)
+                        old_signal = indicators["Sinyal"]
+                        long_n = int(indicators["LONG koşul"].split("/")[0])
+                        short_n = int(indicators["SHORT koşul"].split("/")[0])
+                        long_n += int(fib[("1h", "LONG")][0]) + int(fib[("4h", "LONG")][0])
+                        short_n += int(fib[("1h", "SHORT")][0]) + int(fib[("4h", "SHORT")][0])
+                        indicators["LONG koşul"] = f"{long_n}/8"
+                        indicators["SHORT koşul"] = f"{short_n}/8"
+                        for tf in ("1h", "4h"):
+                            for side in ("LONG", "SHORT"):
+                                passed, level, distance = fib[(tf, side)]
+                                indicators[f"Fib {tf} {side}"] = passed
+                                indicators[f"Fib {tf} {side} seviye ($)"] = level
+                                indicators[f"Fib {tf} {side} uzaklık ATR"] = round(distance, 2) if np.isfinite(distance) else np.nan
+                        missing_long = [f"Fib {tf}" for tf in ("1h", "4h") if not fib[(tf, "LONG")][0]]
+                        missing_short = [f"Fib {tf}" for tf in ("1h", "4h") if not fib[(tf, "SHORT")][0]]
+                        old_missing = indicators["Eksik koşul"]
+                        if old_signal == "🟢 LONG" and long_n == 8:
+                            indicators["Fırsat durumu"] = "🟢 LONG"
+                            indicators["Eksik koşul"] = "—"
+                        elif old_signal == "🔴 SHORT" and short_n == 8:
+                            indicators["Fırsat durumu"] = "🔴 SHORT"
+                            indicators["Eksik koşul"] = "—"
+                        elif long_n == 7 and short_n < 7:
+                            indicators["Fırsat durumu"] = "🟡 LONG adayı"
+                            indicators["Eksik koşul"] = ", ".join(missing_long) if missing_long else old_missing
+                        elif short_n == 7 and long_n < 7:
+                            indicators["Fırsat durumu"] = "🟠 SHORT adayı"
+                            indicators["Eksik koşul"] = ", ".join(missing_short) if missing_short else old_missing
+                        else:
+                            indicators["Fırsat durumu"] = "⚪ BEKLE"
+                            indicators["Eksik koşul"] = "LONG Fib: " + (", ".join(missing_long) or "OK") + " | SHORT Fib: " + (", ".join(missing_short) or "OK") + " | Teknik: " + old_missing
+                        indicators["Sinyal"] = indicators["Fırsat durumu"] if indicators["Fırsat durumu"] in ("🟢 LONG", "🔴 SHORT") else "⚪ BEKLE"
                         try:
                             derivative = okx_derivatives(inst)
                         except Exception:
@@ -400,7 +439,7 @@ def live_radar():
                 r1.metric("🟢 LONG", int(counts.get("🟢 LONG", 0)))
                 r2.metric("🔴 SHORT", int(counts.get("🔴 SHORT", 0)))
                 r3.metric("🟡🟠 Yaklaşan aday", int(radar["Fırsat durumu"].isin(["🟡 LONG adayı", "🟠 SHORT adayı"]).sum()))
-                show = ["Parite", "Fırsat durumu", "LONG koşul", "SHORT koşul", "Eksik koşul", "Sinyal", "Ticker UTC", "Sinyal mumu", "Fiyat ($)",
+                show = ["Parite", "Fırsat durumu", "LONG koşul", "SHORT koşul", "Eksik koşul", "Fib 1h LONG", "Fib 4h LONG", "Fib 1h SHORT", "Fib 4h SHORT", "Sinyal", "Ticker UTC", "Sinyal mumu", "Fiyat ($)",
                         "Referans giriş ($)", "Stop ($)", "Hedef ($)",
                         "Stop uzaklık %", "Hedef uzaklık %", "Risk/Ödül",
                         "24s hacim yaklaşık ($)", "RSI", "ADX", "Hacim katı",
