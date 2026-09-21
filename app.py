@@ -13,7 +13,6 @@ import streamlit as st
 
 st.set_page_config(page_title="Burak Crypto Radar", page_icon="📡", layout="wide")
 CG = "https://api.coingecko.com/api/v3"
-BINANCE = "https://api.binance.com/api/v3"
 HEADERS = {"User-Agent": "BurakCryptoRadar/1.0", "accept": "application/json"}
 STABLE = {"usdt", "usdc", "dai", "fdusd", "tusd", "usde", "usdd", "pyusd", "frax"}
 
@@ -42,21 +41,42 @@ def market_data(pages, api_key):
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def exchange_symbols():
-    info = get_json(f"{BINANCE}/exchangeInfo")
-    return {x["baseAsset"]: x["symbol"] for x in info["symbols"]
-            if x["quoteAsset"] == "USDT" and x["status"] == "TRADING"
-            and x.get("isSpotTradingAllowed", True)}
+    """Kraken public spot USD/USDT pairs. No Binance dependency."""
+    payload = get_json("https://api.kraken.com/0/public/AssetPairs")
+    if payload.get("error"):
+        raise RuntimeError("; ".join(payload["error"]))
+    result = {}
+    for pair_id, item in payload.get("result", {}).items():
+        if item.get("status") != "online" or item.get("wsname") is None:
+            continue
+        base, sep, quote = item["wsname"].partition("/")
+        if not sep or quote not in ("USD", "USDT"):
+            continue
+        base = {"XBT": "BTC", "XDG": "DOGE"}.get(base, base)
+        # Prefer USD over USDT for broad coverage, but keep existing USD.
+        if base not in result or quote == "USD":
+            result[base] = (pair_id, quote)
+    return result
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
-def candles(symbol, interval):
-    data = get_json(f"{BINANCE}/klines", {"symbol": symbol, "interval": interval, "limit": 230})
-    df = pd.DataFrame(data, columns=["ts", "open", "high", "low", "close", "volume",
-                                     "close_ts", "quote_volume", "trades", "buy_base", "buy_quote", "ignore"])
-    for c in ["open", "high", "low", "close", "volume", "quote_volume"]:
+def candles(pair, interval):
+    minutes = {"1d": 1440, "4h": 240, "1h": 60}[interval]
+    payload = get_json("https://api.kraken.com/0/public/OHLC",
+                       {"pair": pair, "interval": minutes})
+    if payload.get("error"):
+        raise RuntimeError("; ".join(payload["error"]))
+    series = next((v for k, v in payload.get("result", {}).items()
+                   if k != "last"), None)
+    if not series:
+        raise ValueError("Kraken OHLC data unavailable")
+    df = pd.DataFrame(series, columns=["ts", "open", "high", "low", "close",
+                                        "vwap", "volume", "trades"])
+    for c in ["open", "high", "low", "close", "vwap", "volume"]:
         df[c] = pd.to_numeric(df[c], errors="coerce")
-    df["date"] = pd.to_datetime(df["ts"], unit="ms", utc=True)
-    # Ignore the current incomplete candle to prevent unstable signals.
+    df["quote_volume"] = df["volume"] * df["vwap"]
+    df["date"] = pd.to_datetime(df["ts"], unit="s", utc=True)
+    # Kraken returns the current uncommitted candle as the final entry.
     return df.iloc[:-1].copy()
 
 
@@ -135,7 +155,7 @@ with st.sidebar:
     min_turnover = st.slider("En düşük hacim / MC (%)", 0, 100, 5)
     interval = st.selectbox("Teknik zaman dilimi", ["1d", "4h", "1h"], index=0)
     limit = st.slider("Teknik analiz yapılacak aday sayısı", 5, 60, 25, 5)
-    st.caption("Veri önbelleği 1 saat. Binance fiyat verisinde kapanmamış mum dışlanır.")
+    st.caption("Veri önbelleği 1 saat. Kraken fiyat verisinde kapanmamış mum dışlanır.")
     if st.button("🔄 Önbelleği temizle ve yeniden tara"):
         st.cache_data.clear()
         st.rerun()
@@ -176,7 +196,7 @@ with st.spinner("Seçili adaylar için teknik veriler hesaplanıyor..."):
         symbols = exchange_symbols()
     except Exception as exc:
         symbols = {}
-        st.warning(f"Binance spot sembolleri alınamadı; teknik analiz boş kalabilir: {exc}")
+        st.warning(f"Kraken spot sembolleri alınamadı; teknik analiz boş kalabilir: {exc}")
     tech_rows = []
     errors = 0
     for _, row in selected.head(limit).iterrows():
@@ -184,14 +204,14 @@ with st.spinner("Seçili adaylar için teknik veriler hesaplanıyor..."):
         if sym not in symbols:
             continue
         try:
-            t = technical(candles(symbols[sym], interval))
+            t = technical(candles(symbols[sym][0], interval))
             if t:
                 tech_rows.append({"id": row.id, **t})
         except Exception:
             errors += 1
     tech = pd.DataFrame(tech_rows)
 if errors:
-    st.warning(f"{errors} sembolün teknik verisi alınamadı. Binance bölgesel erişimi veya istek limiti etkili olabilir.")
+    st.warning(f"{errors} sembolün teknik verisi alınamadı. Kraken erişimi, veri geçmişi veya istek limiti etkili olabilir.")
 
 if not selected.empty:
     view = selected.merge(tech, on="id", how="left") if not tech.empty else selected.copy()
@@ -217,7 +237,7 @@ with spot:
                                   format_func=lambda x: available.loc[available.id == x, "name"].iloc[0])
             row = available[available.id == choice].iloc[0]
             try:
-                chart = candles(symbols[str(row.symbol).upper()], interval)
+                chart = candles(symbols[str(row.symbol).upper()][0], interval)
                 fig = go.Figure(go.Candlestick(x=chart.date, open=chart.open, high=chart.high,
                                                low=chart.low, close=chart.close, name="Fiyat"))
                 for n in (20, 50, 200):
@@ -243,11 +263,11 @@ with futures:
     st.caption("Komisyon, fonlama, slippage, bakım teminatı ve borsaya özgü likidasyon kuralları dahil değildir. Likidasyon bu basit hesaplamadan daha önce gerçekleşebilir.")
 
 with methodology:
-    st.markdown("""**Veri kaynakları:** CoinGecko `/coins/markets` (market cap, FDV, 24 saatlik hacim); Binance spot `/exchangeInfo` ve `/klines` (OHLCV). CoinGecko ve Binance farklı fiyat/arz anlık görüntüleri sunabilir.
+    st.markdown("""**Veri kaynakları:** CoinGecko `/coins/markets` (market cap, FDV, 24 saatlik hacim); Kraken public `/AssetPairs` ve `/OHLC` (OHLCV). Kraken spot USD/USDT paritesi bulunmayan coinlerde teknik skor boş kalır. CoinGecko ve Kraken farklı fiyat/arz anlık görüntüleri sunabilir.
 
 **Temel ön skor (0–100):** Market cap bandı 25, FDV/MC 25, hacim/MC 25, mutlak hacim 25. Bunlar kullanıcı tarafından değiştirilebilir filtrelere ek, sabit ve açıklanabilir araştırma puanlarıdır.
 
-**Teknik skor (0–100):** EMA/trend 30, RSI 10, MACD 15, ADX 15, göreli hacim 20; toplam 90 ham puan 100'e normalize edilir. Hacim karşılaştırması Binance USDT işlem hacmi üzerinden yapılır. Tamamlanmış son mum kullanılır.
+**Teknik skor (0–100):** EMA/trend 30, RSI 10, MACD 15, ADX 15, göreli hacim 20; toplam 90 ham puan 100'e normalize edilir. Hacim karşılaştırması Kraken USD/USDT işlem hacmi (yaklaşık VWAP × baz hacim) üzerinden yapılır. Tamamlanmış son mum kullanılır.
 
 **Birleşik araştırma skoru:** %60 temel ön skor + %40 teknik skor. Bu, 10x/20x olasılığı veya getiri tahmini değildir; geçmiş performans testi yapılmamıştır.
 
