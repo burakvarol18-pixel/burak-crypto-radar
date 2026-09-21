@@ -295,6 +295,23 @@ with st.sidebar:
                         st.error(f"{label}: HTTP {status} — {response.text[:180]}")
                 except requests.exceptions.RequestException as exc:
                     st.error(f"{label}: bağlantı hatası — {type(exc).__name__}: {str(exc)[:130]}")
+    with st.expander("🌐 Binance dil başlığı testi"):
+        st.caption("Aynı Binance Futures ping adresine aynı sunucudan üç ayrı Accept-Language başlığıyla istek gönderir. API anahtarı gerekmez.")
+        if st.button("Varsayılan / İngilizce / Türkçe karşılaştır"):
+            url = "https://fapi.binance.com/fapi/v1/ping"
+            for label, language in [("Varsayılan", None), ("İngilizce (en-US)", "en-US,en;q=0.9"), ("Türkçe (tr-TR)", "tr-TR,tr;q=0.9")]:
+                hdr = dict(HEADERS)
+                if language is not None:
+                    hdr["Accept-Language"] = language
+                try:
+                    response = requests.get(url, headers=hdr, timeout=8)
+                    message = f"{label}: HTTP {response.status_code}"
+                    if response.status_code == 200:
+                        st.success(message + " — erişim var")
+                    else:
+                        st.error(message + " — " + response.text[:220])
+                except requests.exceptions.RequestException as exc:
+                    st.error(f"{label}: {type(exc).__name__}: {str(exc)[:140]}")
     if st.button("🔄 Önbelleği temizle ve yeniden tara"):
         st.cache_data.clear()
         st.rerun()
