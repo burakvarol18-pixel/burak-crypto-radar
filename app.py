@@ -1,4 +1,4 @@
-"""BURAK CRYPTO RADAR V4.4 — OKX LIVE USDT perpetual market research only.
+"""BURAK CRYPTO RADAR V4.5 — OKX LIVE USDT perpetual market research only.
 No orders, account access, or leverage execution.
 """
 import numpy as np
@@ -7,7 +7,7 @@ import plotly.graph_objects as go
 import requests
 import streamlit as st
 
-st.set_page_config(page_title="Burak Crypto Radar V4.4 — OKX LIVE", page_icon="📡", layout="wide")
+st.set_page_config(page_title="Burak Crypto Radar V4.5 — OKX LIVE", page_icon="📡", layout="wide")
 HEADERS = {"User-Agent": "BurakCryptoRadar/1.0", "accept": "application/json"}
 STABLE = {"usdt", "usdc", "dai", "fdusd", "tusd", "usde", "usdd", "pyusd", "frax"}
 
@@ -64,24 +64,24 @@ def technical(df):
     bullish = (c > e20.iloc[-1] > e50.iloc[-1]
                and macd.iloc[-1] > signal.iloc[-1]
                and plus_di.iloc[-1] > minus_di.iloc[-1]
-               and a >= 20 and 45 <= r <= 68 and v >= 1.2)
+               and a >= 20 and r <= 20 and v >= 1.2)
     bearish = (c < e20.iloc[-1] < e50.iloc[-1]
                and macd.iloc[-1] < signal.iloc[-1]
                and minus_di.iloc[-1] > plus_di.iloc[-1]
-               and a >= 20 and 32 <= r <= 55 and v >= 1.2)
+               and a >= 20 and r >= 85 and v >= 1.2)
     direction = "🟢 LONG" if bullish else ("🔴 SHORT" if bearish else "⚪ BEKLE")
 
     long_tests = {"EMA": bool(c > e20.iloc[-1] > e50.iloc[-1]),
                   "MACD": bool(macd.iloc[-1] > signal.iloc[-1]),
                   "DI": bool(plus_di.iloc[-1] > minus_di.iloc[-1]),
                   "ADX": bool(a >= 20),
-                  "RSI": bool(45 <= r <= 68),
+                  "RSI": bool(r <= 20),
                   "Hacim": bool(v >= 1.2)}
     short_tests = {"EMA": bool(c < e20.iloc[-1] < e50.iloc[-1]),
                    "MACD": bool(macd.iloc[-1] < signal.iloc[-1]),
                    "DI": bool(minus_di.iloc[-1] > plus_di.iloc[-1]),
                    "ADX": bool(a >= 20),
-                   "RSI": bool(32 <= r <= 55),
+                   "RSI": bool(r >= 85),
                    "Hacim": bool(v >= 1.2)}
     lc, sc = sum(long_tests.values()), sum(short_tests.values())
     if bullish:
@@ -220,10 +220,10 @@ def backtest_directional(df, hold_bars=4, fee_pct=.1, slip_pct=.05):
     adx = dx.ewm(alpha=1/14, adjust=False).mean()
     vr = vol / vol.shift(1).rolling(20).mean().replace(0, np.nan)
     long_cond = ((c > e20) & (e20 > e50) & (macd > sig)
-                 & (pdi > mdi) & (adx >= 20) & rsi.between(45, 68)
+                 & (pdi > mdi) & (adx >= 20) & (rsi <= 20)
                  & (vr >= 1.2))
     short_cond = ((c < e20) & (e20 < e50) & (macd < sig)
-                  & (mdi > pdi) & (adx >= 20) & rsi.between(32, 55)
+                  & (mdi > pdi) & (adx >= 20) & (rsi >= 85)
                   & (vr >= 1.2))
     state = np.where(long_cond, 1, np.where(short_cond, -1, 0))
     trades = []
@@ -396,7 +396,7 @@ def analyze_okx_coin(item, okx_interval, stop_mult, target_mult):
 
 def live_radar():
         st.subheader("OKX USDT Perpetual — LONG / SHORT Radar")
-        st.caption("OKX canlı ticker ve açık perpetual mumundan geçici LONG/SHORT adayları. Hesap bağlanmaz, emir gönderilmez.")
+        st.caption("OKX canlı ticker ve açık perpetual mumundan geçici LONG/SHORT adayları. RSI14: LONG ≤20, SHORT ≥85. Hesap bağlanmaz, emir gönderilmez.")
         p1, p2, p3 = st.columns(3)
         with p1:
             okx_interval = st.selectbox("Perpetual zaman dilimi", ["1h", "4h", "1d"], key="okx_interval")
@@ -528,5 +528,5 @@ with futures:
 with methodology:
     st.markdown("""**V4 canlı aday sinyaller:** OKX USDT perpetual ticker fiyatı ve oluşmakta olan mum (confirm=0). Fiyat/mum önbelleği 15 saniye, fonlama ve OI 60 saniye. Açık sekme seçtiğin otomatik yenileme aralığında yenilenir. Ticker UTC, OKX fiyat zaman damgasıdır. REST veri kaynakları tam eşzamanlı olmayabilir.
 
-**Göstergeler:** EMA, MACD, RSI, ADX ve ATR için önceki mumlar matematiksel olarak gereklidir; geçmiş performans testi yapılmaz. Açık mum hacmi geçen süreye göre yaklaşık tam mum hacmine ölçeklenir (ilk %10 için tahmin özellikle belirsizdir). Mum kapanmadan sinyal değişebilir. ATR stop/hedef canlı ticker fiyatına göre varsayımsaldır, gerçek emir gerçekleşmesi değildir. Funding, spread, komisyon, kayma, kaldıraç ve likidasyon dahil değildir. Otomatik emir gönderilmez.
+**RSI eşiği (V4.5):** LONG için RSI14 ≤20, SHORT için RSI14 ≥85. Bu aşırı uç eşikler EMA/MACD yön teyitleriyle birlikte nadiren sağlanabilir; aday ve tam sinyal sayısı belirgin azalabilir. Teknik skorun RSI puanlaması ayrı bir bilgi göstergesidir, sinyal koşulu değildir.\n\n**Göstergeler:** EMA, MACD, RSI, ADX ve ATR için önceki mumlar matematiksel olarak gereklidir; geçmiş performans testi yapılmaz. Açık mum hacmi geçen süreye göre yaklaşık tam mum hacmine ölçeklenir (ilk %10 için tahmin özellikle belirsizdir). Mum kapanmadan sinyal değişebilir. ATR stop/hedef canlı ticker fiyatına göre varsayımsaldır, gerçek emir gerçekleşmesi değildir. Funding, spread, komisyon, kayma, kaldıraç ve likidasyon dahil değildir. Otomatik emir gönderilmez.
 """)
