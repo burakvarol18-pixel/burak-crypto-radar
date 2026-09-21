@@ -1,4 +1,4 @@
-"""BURAK CRYPTO RADAR V4.2 — OKX LIVE USDT perpetual market research only.
+"""BURAK CRYPTO RADAR V4.3 — OKX LIVE USDT perpetual market research only.
 No orders, account access, or leverage execution.
 """
 import numpy as np
@@ -7,7 +7,7 @@ import plotly.graph_objects as go
 import requests
 import streamlit as st
 
-st.set_page_config(page_title="Burak Crypto Radar V4.2 — OKX LIVE", page_icon="📡", layout="wide")
+st.set_page_config(page_title="Burak Crypto Radar V4.3 — OKX LIVE", page_icon="📡", layout="wide")
 HEADERS = {"User-Agent": "BurakCryptoRadar/1.0", "accept": "application/json"}
 STABLE = {"usdt", "usdc", "dai", "fdusd", "tusd", "usde", "usdd", "pyusd", "frax"}
 
@@ -329,6 +329,74 @@ with st.sidebar:
 radar_tab, futures, methodology = st.tabs(["🟢🔴 OKX Perpetual Radar", "⚠️ Vadeli risk ekranı", "ℹ️ Metodoloji"])
 
 @st.fragment(run_every="20s")
+def analyze_okx_coin(item, okx_interval, stop_mult, target_mult):
+    inst = item["Parite"]
+    frame = okx_candles(inst, okx_interval)
+    if frame.iloc[-1]["confirm"] != "0":
+        okx_fail += 1
+        continue
+    frame = frame.copy()
+    live_price = float(item["Fiyat ($)"])
+    frame.loc[frame.index[-1], "close"] = live_price
+    frame.loc[frame.index[-1], "high"] = max(float(frame.iloc[-1]["high"]), live_price)
+    frame.loc[frame.index[-1], "low"] = min(float(frame.iloc[-1]["low"]), live_price)
+    seconds = {"1h": 3600, "4h": 14400, "1d": 86400}[okx_interval]
+    elapsed = (item["Ticker UTC"] - frame.iloc[-1]["date"]).total_seconds()
+    fraction = min(1., max(.1, elapsed / seconds))
+    frame.loc[frame.index[-1], "quote_volume"] /= fraction
+    indicators = technical(frame)
+    if indicators is None:
+        okx_fail += 1
+        continue
+    fib = {}
+    for tf in ("1h", "4h"):
+        fib_frame = frame if tf == okx_interval else okx_candles(inst, tf)
+        if fib_frame.iloc[-1]["confirm"] != "0":
+            raise ValueError("Fibonacci için açık mum yok")
+        for side in ("LONG", "SHORT"):
+            fib[(tf, side)] = fibonacci_check(fib_frame, live_price, side)
+    old_signal = indicators["Sinyal"]
+    long_n = int(indicators["LONG koşul"].split("/")[0])
+    short_n = int(indicators["SHORT koşul"].split("/")[0])
+    long_n += int(fib[("1h", "LONG")][0]) + int(fib[("4h", "LONG")][0])
+    short_n += int(fib[("1h", "SHORT")][0]) + int(fib[("4h", "SHORT")][0])
+    indicators["LONG koşul"] = f"{long_n}/8"
+    indicators["SHORT koşul"] = f"{short_n}/8"
+    for tf in ("1h", "4h"):
+        for side in ("LONG", "SHORT"):
+            passed, level, distance = fib[(tf, side)]
+            indicators[f"Fib {tf} {side}"] = passed
+            indicators[f"Fib {tf} {side} seviye ($)"] = level
+            indicators[f"Fib {tf} {side} uzaklık ATR"] = round(distance, 2) if np.isfinite(distance) else np.nan
+    missing_long = [f"Fib {tf}" for tf in ("1h", "4h") if not fib[(tf, "LONG")][0]]
+    missing_short = [f"Fib {tf}" for tf in ("1h", "4h") if not fib[(tf, "SHORT")][0]]
+    old_missing = indicators["Eksik koşul"]
+    if old_signal == "🟢 LONG" and long_n == 8:
+        indicators["Fırsat durumu"] = "🟢 LONG"
+        indicators["Eksik koşul"] = "—"
+    elif old_signal == "🔴 SHORT" and short_n == 8:
+        indicators["Fırsat durumu"] = "🔴 SHORT"
+        indicators["Eksik koşul"] = "—"
+    elif long_n == 7 and short_n < 7:
+        indicators["Fırsat durumu"] = "🟡 LONG adayı"
+        indicators["Eksik koşul"] = ", ".join(missing_long) if missing_long else old_missing
+    elif short_n == 7 and long_n < 7:
+        indicators["Fırsat durumu"] = "🟠 SHORT adayı"
+        indicators["Eksik koşul"] = ", ".join(missing_short) if missing_short else old_missing
+    else:
+        indicators["Fırsat durumu"] = "⚪ BEKLE"
+        indicators["Eksik koşul"] = "LONG Fib: " + (", ".join(missing_long) or "OK") + " | SHORT Fib: " + (", ".join(missing_short) or "OK") + " | Teknik: " + old_missing
+    indicators["Sinyal"] = indicators["Fırsat durumu"] if indicators["Fırsat durumu"] in ("🟢 LONG", "🔴 SHORT") else "⚪ BEKLE"
+    try:
+        derivative = okx_derivatives(inst)
+    except Exception:
+        derivative = {"Funding %": np.nan, "OI ($)": np.nan}
+    levels = levels_and_risks(frame, {})
+    scenario = atr_scenario(indicators, levels, stop_mult, target_mult)
+    indicators["Sinyal mumu"] += " (açık / geçici)"
+    return {**item.to_dict(), **indicators, **levels, **scenario, **derivative}
+
+
 def live_radar():
         st.subheader("OKX USDT Perpetual — LONG / SHORT Radar")
         st.caption("OKX canlı ticker ve açık perpetual mumundan geçici LONG/SHORT adayları. Hesap bağlanmaz, emir gönderilmez.")
@@ -355,73 +423,8 @@ def live_radar():
             okx_fail = 0
             with st.spinner("OKX perpetual mumları ve vadeli göstergeleri alınıyor..."):
                 for _, item in universe.head(okx_limit).iterrows():
-                    inst = item["Parite"]
                     try:
-                        frame = okx_candles(inst, okx_interval)
-                        if frame.iloc[-1]["confirm"] != "0":
-                            okx_fail += 1
-                            continue
-                        frame = frame.copy()
-                        live_price = float(item["Fiyat ($)"])
-                        frame.loc[frame.index[-1], "close"] = live_price
-                        frame.loc[frame.index[-1], "high"] = max(float(frame.iloc[-1]["high"]), live_price)
-                        frame.loc[frame.index[-1], "low"] = min(float(frame.iloc[-1]["low"]), live_price)
-                        seconds = {"1h": 3600, "4h": 14400, "1d": 86400}[okx_interval]
-                        elapsed = (item["Ticker UTC"] - frame.iloc[-1]["date"]).total_seconds()
-                        fraction = min(1., max(.1, elapsed / seconds))
-                        frame.loc[frame.index[-1], "quote_volume"] /= fraction
-                        indicators = technical(frame)
-                        if indicators is None:
-                            okx_fail += 1
-                            continue
-                        fib = {}
-                        for tf in ("1h", "4h"):
-                            fib_frame = frame if tf == okx_interval else okx_candles(inst, tf)
-                            if fib_frame.iloc[-1]["confirm"] != "0":
-                                raise ValueError("Fibonacci için açık mum yok")
-                            for side in ("LONG", "SHORT"):
-                                fib[(tf, side)] = fibonacci_check(fib_frame, live_price, side)
-                        old_signal = indicators["Sinyal"]
-                        long_n = int(indicators["LONG koşul"].split("/")[0])
-                        short_n = int(indicators["SHORT koşul"].split("/")[0])
-                        long_n += int(fib[("1h", "LONG")][0]) + int(fib[("4h", "LONG")][0])
-                        short_n += int(fib[("1h", "SHORT")][0]) + int(fib[("4h", "SHORT")][0])
-                        indicators["LONG koşul"] = f"{long_n}/8"
-                        indicators["SHORT koşul"] = f"{short_n}/8"
-                        for tf in ("1h", "4h"):
-                            for side in ("LONG", "SHORT"):
-                                passed, level, distance = fib[(tf, side)]
-                                indicators[f"Fib {tf} {side}"] = passed
-                                indicators[f"Fib {tf} {side} seviye ($)"] = level
-                                indicators[f"Fib {tf} {side} uzaklık ATR"] = round(distance, 2) if np.isfinite(distance) else np.nan
-                        missing_long = [f"Fib {tf}" for tf in ("1h", "4h") if not fib[(tf, "LONG")][0]]
-                        missing_short = [f"Fib {tf}" for tf in ("1h", "4h") if not fib[(tf, "SHORT")][0]]
-                        old_missing = indicators["Eksik koşul"]
-                        if old_signal == "🟢 LONG" and long_n == 8:
-                            indicators["Fırsat durumu"] = "🟢 LONG"
-                            indicators["Eksik koşul"] = "—"
-                        elif old_signal == "🔴 SHORT" and short_n == 8:
-                            indicators["Fırsat durumu"] = "🔴 SHORT"
-                            indicators["Eksik koşul"] = "—"
-                        elif long_n == 7 and short_n < 7:
-                            indicators["Fırsat durumu"] = "🟡 LONG adayı"
-                            indicators["Eksik koşul"] = ", ".join(missing_long) if missing_long else old_missing
-                        elif short_n == 7 and long_n < 7:
-                            indicators["Fırsat durumu"] = "🟠 SHORT adayı"
-                            indicators["Eksik koşul"] = ", ".join(missing_short) if missing_short else old_missing
-                        else:
-                            indicators["Fırsat durumu"] = "⚪ BEKLE"
-                            indicators["Eksik koşul"] = "LONG Fib: " + (", ".join(missing_long) or "OK") + " | SHORT Fib: " + (", ".join(missing_short) or "OK") + " | Teknik: " + old_missing
-                        indicators["Sinyal"] = indicators["Fırsat durumu"] if indicators["Fırsat durumu"] in ("🟢 LONG", "🔴 SHORT") else "⚪ BEKLE"
-                        try:
-                            derivative = okx_derivatives(inst)
-                        except Exception:
-                            derivative = {"Funding %": np.nan, "OI ($)": np.nan}
-                        levels = levels_and_risks(frame, {})
-                        scenario = atr_scenario(indicators, levels, stop_mult, target_mult)
-                        indicators["Sinyal mumu"] += " (açık / geçici)"
-                        okx_rows.append({**item.to_dict(), **indicators,
-                                         **levels, **scenario, **derivative})
+                        okx_rows.append(analyze_okx_coin(item, okx_interval, stop_mult, target_mult))
                     except Exception:
                         okx_fail += 1
             if okx_fail:
@@ -462,6 +465,41 @@ def live_radar():
                 st.warning("Canlı aday sinyal: Açık mum kapanmadan LONG/SHORT değişebilir. Ticker UTC zamanını kontrol et; eski fiyatı işlem referansı alma.")
         except Exception as exc:
             st.error(f"OKX radar yüklenemedi: {type(exc).__name__}: {exc}")
+
+        st.divider()
+        st.subheader("🔎 Kendi coinini analiz et")
+        st.caption("Ana tarama listesinden bağımsızdır. OKX USDT perpetual paritesini gir; aynı teknik + 1h/4h Fibonacci 8 koşuluyla değerlendirilir. Ana taramanın hacim ve ilk-N sınırına tabi değildir.")
+        custom_text = st.text_input("Coin sembolü", placeholder="Örn. ETH, SOL veya ETH-USDT-SWAP", key="custom_coin")
+        if custom_text.strip():
+            raw = custom_text.strip().upper().replace("/", "-").replace(" ", "")
+            symbol = raw.removesuffix("-USDT-SWAP").removesuffix("-USDT")
+            inst_id = symbol + "-USDT-SWAP"
+            try:
+                full_universe = okx_perpetual_universe()
+                matched = full_universe[full_universe["Parite"] == inst_id]
+                if matched.empty:
+                    st.warning(f"{inst_id} OKX USDT perpetual listesinde bulunamadı. Coin sembolünü kontrol et.")
+                else:
+                    with st.spinner(f"{inst_id} canlı verileri ve Fibonacci teyitleri hesaplanıyor..."):
+                        custom = analyze_okx_coin(matched.iloc[0], okx_interval, stop_mult, target_mult)
+                    st.metric("Fırsat durumu", custom["Fırsat durumu"])
+                    c1, c2, c3 = st.columns(3)
+                    c1.metric("Canlı fiyat ($)", f'{custom["Fiyat ($)"]:,.6g}')
+                    c2.metric("LONG koşul", custom["LONG koşul"])
+                    c3.metric("SHORT koşul", custom["SHORT koşul"])
+                    st.write("**Eksik koşul:**", custom["Eksik koşul"])
+                    fields = ["Parite", "Ticker UTC", "Sinyal mumu", "Fırsat durumu", "Eksik koşul",
+                              "Fib 1h LONG", "Fib 4h LONG", "Fib 1h SHORT", "Fib 4h SHORT",
+                              "Fib 1h LONG seviye ($)", "Fib 4h LONG seviye ($)",
+                              "Fib 1h SHORT seviye ($)", "Fib 4h SHORT seviye ($)",
+                              "RSI", "ADX", "Hacim katı", "ATR14 %",
+                              "Referans giriş ($)", "Stop ($)", "Hedef ($)", "Risk/Ödül",
+                              "Funding %", "OI ($)"]
+                    st.dataframe(pd.DataFrame([custom])[fields], hide_index=True, use_container_width=True)
+                    st.caption("Canlı açık mumdaki aday sinyaller değişebilir. ATR stop/hedef örnektir; emir gönderilmez.")
+            except Exception as exc:
+                st.error(f"{inst_id} analiz edilemedi: {type(exc).__name__}: {exc}")
+
 
 with radar_tab:
     live_radar()
