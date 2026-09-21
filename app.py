@@ -11,7 +11,7 @@ import plotly.graph_objects as go
 import requests
 import streamlit as st
 
-st.set_page_config(page_title="Burak Crypto Radar V2", page_icon="📡", layout="wide")
+st.set_page_config(page_title="Burak Crypto Radar V2.1", page_icon="📡", layout="wide")
 CG = "https://api.coingecko.com/api/v3"
 HEADERS = {"User-Agent": "BurakCryptoRadar/1.0", "accept": "application/json"}
 STABLE = {"usdt", "usdc", "dai", "fdusd", "tusd", "usde", "usdd", "pyusd", "frax"}
@@ -59,7 +59,7 @@ def exchange_symbols():
     return result
 
 
-@st.cache_data(ttl=3600, show_spinner=False)
+@st.cache_data(ttl=300, show_spinner=False)
 def candles(pair, interval):
     minutes = {"1d": 1440, "4h": 240, "1h": 60}[interval]
     payload = get_json("https://api.kraken.com/0/public/OHLC",
@@ -122,8 +122,21 @@ def technical(df):
         5 if v > 1.2 else 0, 5 if v > 1.5 else 0,
         5 if v > 2 else 0, 5 if v > 3 else 0,
     ])
+    # Independent directional conditions; fundamental growth score does not decide short.
+    bullish = (c > e20.iloc[-1] > e50.iloc[-1]
+               and macd.iloc[-1] > signal.iloc[-1]
+               and plus_di.iloc[-1] > minus_di.iloc[-1]
+               and a >= 20 and 45 <= r <= 68 and v >= 1.2)
+    bearish = (c < e20.iloc[-1] < e50.iloc[-1]
+               and macd.iloc[-1] < signal.iloc[-1]
+               and minus_di.iloc[-1] > plus_di.iloc[-1]
+               and a >= 20 and 32 <= r <= 55 and v >= 1.2)
+    direction = "🟢 LONG" if bullish else ("🔴 SHORT" if bearish else "⚪ BEKLE")
+    # Last fully completed candle; not live tick-by-tick.
+    candle_time = df["date"].iloc[-1].strftime("%Y-%m-%d %H:%M UTC")
     # 30 trend + 10 RSI + 15 MACD + 15 ADX + 20 volume = 90.
-    return {"Teknik skor": round(score / 90 * 100), "RSI": round(r, 1),
+    return {"Sinyal": direction, "Sinyal mumu": candle_time,
+            "Teknik skor": round(score / 90 * 100), "RSI": round(r, 1),
             "ADX": round(a, 1), "Hacim katı": round(v, 2),
             "EMA20 üstü": bool(c > e20.iloc[-1]), "EMA50 üstü": bool(c > e50.iloc[-1]),
             "EMA200 üstü": bool(c > e200.iloc[-1]), "Kapanış": c}
@@ -187,7 +200,7 @@ def fundamental(row):
     return cap_points + dilution_points + turnover_points + liquid_points
 
 
-st.title("📡 BURAK CRYPTO RADAR V2")
+st.title("📡 BURAK CRYPTO RADAR V2.1")
 st.caption("Piyasa araştırması • Spot aday taraması ve ayrı vadeli risk görünümü • Emir göndermez")
 with st.sidebar:
     st.header("Tarama ayarları")
@@ -200,7 +213,7 @@ with st.sidebar:
     min_turnover = st.slider("En düşük hacim / MC (%)", 0, 100, 5)
     interval = st.selectbox("Teknik zaman dilimi", ["1d", "4h", "1h"], index=0)
     limit = st.slider("Teknik analiz yapılacak aday sayısı", 5, 60, 25, 5)
-    st.caption("Veri önbelleği 1 saat. Kraken fiyat verisinde kapanmamış mum dışlanır.")
+    st.caption("CoinGecko önbelleği 1 saat; Kraken mumları 5 dakika. Sinyaller son kapanmış muma göredir, anlık fiyat akışı değildir.")
     if st.button("🔄 Önbelleği temizle ve yeniden tara"):
         st.cache_data.clear()
         st.rerun()
@@ -267,17 +280,36 @@ if not selected.empty:
     view = selected.merge(tech, on="id", how="left") if not tech.empty else selected.copy()
     view["Birleşik araştırma skoru"] = (0.6*view["Temel ön skor"] + 0.4*view["Teknik skor"]).round() if not tech.empty else np.nan
     view = view.sort_values("Birleşik araştırma skoru", ascending=False, na_position="last")
+    if "Sinyal" in view.columns:
+        view["Sinyal"] = view["Sinyal"].fillna("⚪ VERİ YOK")
 else:
     view = selected.copy()
 
 with spot:
     st.subheader("Piyasa ön elemesi ve teknik durum")
+    st.caption("🟢 LONG: yükseliş koşulları • 🔴 SHORT: düşüş koşulları • ⚪ BEKLE: koşullar yetersiz. Son tamamlanmış mum kullanılır; işlem emri değildir.")
+    if "Sinyal" in view:
+        counts = view["Sinyal"].value_counts()
+        a1, a2, a3 = st.columns(3)
+        a1.metric("🟢 LONG", int(counts.get("🟢 LONG", 0)))
+        a2.metric("🔴 SHORT", int(counts.get("🔴 SHORT", 0)))
+        a3.metric("⚪ BEKLE / VERİ YOK", int(counts.get("⚪ BEKLE", 0) + counts.get("⚪ VERİ YOK", 0)))
     st.caption("Birleşik skor yalnızca iki veri grubu mevcutsa hesaplanır. Eksik teknik veri sıfır sayılmaz.")
-    cols = ["name", "symbol", "market_cap", "fully_diluted_valuation", "FDV/MC", "total_volume", "Hacim/MC %", "Temel ön skor"]
+    cols = ["name", "symbol"] + (["Sinyal", "Sinyal mumu"] if "Sinyal" in view else []) + ["market_cap", "fully_diluted_valuation", "FDV/MC", "total_volume", "Hacim/MC %", "Temel ön skor"]
     cols += [x for x in ["Teknik skor", "Birleşik araştırma skoru", "RSI", "ADX", "Hacim katı", "Dolaşım %", "EMA20 ($)", "EMA50 ($)", "20 mum destek ($)", "20 mum direnç ($)", "ATR14 %", "Risk notları"] if x in view]
-    st.dataframe(view[cols].rename(columns={"name":"Coin", "symbol":"Sembol", "market_cap":"MC ($)",
-                    "fully_diluted_valuation":"FDV ($)", "total_volume":"24s hacim ($)"}),
-                 hide_index=True, use_container_width=True)
+    table = view[cols].rename(columns={"name":"Coin", "symbol":"Sembol", "market_cap":"MC ($)",
+                    "fully_diluted_valuation":"FDV ($)", "total_volume":"24s hacim ($)"})
+    if "Sinyal" in table:
+        def signal_color(row):
+            status = row["Sinyal"]
+            bg = ("background-color: #143d2b; color: #e6fff0" if status == "🟢 LONG"
+                  else "background-color: #52232b; color: #fff0f0" if status == "🔴 SHORT"
+                  else "")
+            return [bg] * len(row)
+        st.dataframe(table.style.apply(signal_color, axis=1),
+                     hide_index=True, use_container_width=True)
+    else:
+        st.dataframe(table, hide_index=True, use_container_width=True)
     if view.empty:
         st.info("Filtreye uyan coin yok. Filtreleri genişletebilirsin.")
     elif not tech.empty:
@@ -326,7 +358,7 @@ with futures:
     st.caption("Komisyon, fonlama, slippage, bakım teminatı ve borsaya özgü likidasyon kuralları dahil değildir. Likidasyon bu basit hesaplamadan daha önce gerçekleşebilir.")
 
 with methodology:
-    st.markdown("""**V2 yenilikleri:** Son 20 tamamlanmış mumun destek/direnç seviyeleri, EMA20/50/200, ATR14 volatilitesi, dolaşımdaki arz oranı ve açıklanabilir risk notları. Bunlar fiyat hedefi veya işlem sinyali değildir.\n\n**Veri kaynakları:** CoinGecko `/coins/markets` (market cap, FDV, 24 saatlik hacim); Kraken public `/AssetPairs` ve `/OHLC` (OHLCV). Kraken spot USD/USDT paritesi bulunmayan coinlerde teknik skor boş kalır. CoinGecko ve Kraken farklı fiyat/arz anlık görüntüleri sunabilir.
+    st.markdown("""**V2.1 yön etiketleri:** LONG için kapanış > EMA20 > EMA50, MACD > sinyal çizgisi, +DI > -DI, ADX ≥20, RSI 45–68 ve son kapanmış mumun hacmi önceki 20 mum ortalamasının ≥1,2 katı olmalı. SHORT için kapanış < EMA20 < EMA50, MACD < sinyal çizgisi, -DI > +DI, ADX ≥20, RSI 32–55 ve aynı hacim koşulu aranır. Diğer durumlar BEKLE; veri eksikse VERİ YOK. Birleşik araştırma skoru yön etiketini belirlemez. Bu koşullar geriye dönük test edilmemiştir; kaldıraçlı işlem önerisi değildir. Kraken OHLC 5 dakika önbellekli ve sadece kapanmış mum kullanılır; 1d seçimi gün içinde sürekli değişen sinyal vermez.\n\n**V2 yenilikleri:** Son 20 tamamlanmış mumun destek/direnç seviyeleri, EMA20/50/200, ATR14 volatilitesi, dolaşımdaki arz oranı ve açıklanabilir risk notları. Bunlar fiyat hedefi veya işlem sinyali değildir.\n\n**Veri kaynakları:** CoinGecko `/coins/markets` (market cap, FDV, 24 saatlik hacim); Kraken public `/AssetPairs` ve `/OHLC` (OHLCV). Kraken spot USD/USDT paritesi bulunmayan coinlerde teknik skor boş kalır. CoinGecko ve Kraken farklı fiyat/arz anlık görüntüleri sunabilir.
 
 **Temel ön skor (0–100):** Market cap bandı 25, FDV/MC 25, hacim/MC 25, mutlak hacim 25. Bunlar kullanıcı tarafından değiştirilebilir filtrelere ek, sabit ve açıklanabilir araştırma puanlarıdır.
 
