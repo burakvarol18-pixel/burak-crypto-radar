@@ -1,4 +1,4 @@
-"""BURAK CRYPTO RADAR V4 — OKX LIVE USDT perpetual market research only.
+"""BURAK CRYPTO RADAR V4.1 — OKX LIVE USDT perpetual market research only.
 No orders, account access, or leverage execution.
 """
 import numpy as np
@@ -7,7 +7,7 @@ import plotly.graph_objects as go
 import requests
 import streamlit as st
 
-st.set_page_config(page_title="Burak Crypto Radar V4 — OKX LIVE", page_icon="📡", layout="wide")
+st.set_page_config(page_title="Burak Crypto Radar V4.1 — OKX LIVE", page_icon="📡", layout="wide")
 HEADERS = {"User-Agent": "BurakCryptoRadar/1.0", "accept": "application/json"}
 STABLE = {"usdt", "usdc", "dai", "fdusd", "tusd", "usde", "usdd", "pyusd", "frax"}
 
@@ -70,10 +70,39 @@ def technical(df):
                and minus_di.iloc[-1] > plus_di.iloc[-1]
                and a >= 20 and 32 <= r <= 55 and v >= 1.2)
     direction = "🟢 LONG" if bullish else ("🔴 SHORT" if bearish else "⚪ BEKLE")
-    # Last fully completed candle; not live tick-by-tick.
+
+    long_tests = {"EMA": bool(c > e20.iloc[-1] > e50.iloc[-1]),
+                  "MACD": bool(macd.iloc[-1] > signal.iloc[-1]),
+                  "DI": bool(plus_di.iloc[-1] > minus_di.iloc[-1]),
+                  "ADX": bool(a >= 20),
+                  "RSI": bool(45 <= r <= 68),
+                  "Hacim": bool(v >= 1.2)}
+    short_tests = {"EMA": bool(c < e20.iloc[-1] < e50.iloc[-1]),
+                   "MACD": bool(macd.iloc[-1] < signal.iloc[-1]),
+                   "DI": bool(minus_di.iloc[-1] > plus_di.iloc[-1]),
+                   "ADX": bool(a >= 20),
+                   "RSI": bool(32 <= r <= 55),
+                   "Hacim": bool(v >= 1.2)}
+    lc, sc = sum(long_tests.values()), sum(short_tests.values())
+    if bullish:
+        stage, missing = "🟢 LONG", "—"
+    elif bearish:
+        stage, missing = "🔴 SHORT", "—"
+    elif lc == 5 and sc < 5:
+        stage = "🟡 LONG adayı"
+        missing = ", ".join(k for k, ok in long_tests.items() if not ok)
+    elif sc == 5 and lc < 5:
+        stage = "🟠 SHORT adayı"
+        missing = ", ".join(k for k, ok in short_tests.items() if not ok)
+    elif lc == 5 and sc == 5:
+        stage, missing = "⚪ Çelişkili aday", "LONG ve SHORT farklı koşullarda eksik"
+    else:
+        stage, missing = "⚪ BEKLE", "LONG: " + ", ".join(k for k, ok in long_tests.items() if not ok) + " | SHORT: " + ", ".join(k for k, ok in short_tests.items() if not ok)
+    # The live candle may change before close.
     candle_time = df["date"].iloc[-1].strftime("%Y-%m-%d %H:%M UTC")
     # 30 trend + 10 RSI + 15 MACD + 15 ADX + 20 volume = 90.
-    return {"Sinyal": direction, "Sinyal mumu": candle_time,
+    return {"Sinyal": direction, "Fırsat durumu": stage, "Eksik koşul": missing,
+            "LONG koşul": f"{lc}/6", "SHORT koşul": f"{sc}/6", "Sinyal mumu": candle_time,
             "Teknik skor": round(score / 90 * 100), "RSI": round(r, 1),
             "ADX": round(a, 1), "Hacim katı": round(v, 2),
             "EMA20 üstü": bool(c > e20.iloc[-1]), "EMA50 üstü": bool(c > e50.iloc[-1]),
@@ -287,9 +316,9 @@ def live_radar():
         with p1:
             okx_interval = st.selectbox("Perpetual zaman dilimi", ["1h", "4h", "1d"], key="okx_interval")
         with p2:
-            okx_limit = st.slider("Hacme göre analiz edilecek parite", 5, 30, 15, 5, key="okx_limit")
+            okx_limit = st.slider("Hacme göre analiz edilecek parite", 5, 60, 30, 5, key="okx_limit")
         with p3:
-            okx_min_vol = st.number_input("En düşük yaklaşık 24s hacim ($ milyon)", min_value=0., value=5., step=5., key="okx_min_vol")
+            okx_min_vol = st.number_input("En düşük yaklaşık 24s hacim ($ milyon)", min_value=0., value=1., step=1., key="okx_min_vol")
         st.info("Bu ekran CoinGecko market cap filtresinden bağımsızdır: OKX'teki USDT perpetual pariteleri yaklaşık 24 saatlik işlem hacmine göre tarar.")
         a1, a2 = st.columns(2)
         with a1:
@@ -342,25 +371,27 @@ def live_radar():
                 st.warning("Analiz edilebilir perpetual parite bulunamadı. Daha sonra tekrar dene.")
             else:
                 radar = pd.DataFrame(okx_rows)
-                order = {"🟢 LONG": 0, "🔴 SHORT": 1, "⚪ BEKLE": 2}
-                radar["_order"] = radar["Sinyal"].map(order).fillna(3)
+                order = {"🟢 LONG": 0, "🔴 SHORT": 1, "🟡 LONG adayı": 2, "🟠 SHORT adayı": 3, "⚪ Çelişkili aday": 4, "⚪ BEKLE": 5}
+                radar["_order"] = radar["Fırsat durumu"].map(order).fillna(6)
                 radar = radar.sort_values(["_order", "24s hacim yaklaşık ($)"],
                                           ascending=[True, False]).drop(columns="_order")
                 counts = radar["Sinyal"].value_counts()
                 r1, r2, r3 = st.columns(3)
                 r1.metric("🟢 LONG", int(counts.get("🟢 LONG", 0)))
                 r2.metric("🔴 SHORT", int(counts.get("🔴 SHORT", 0)))
-                r3.metric("⚪ BEKLE", int(counts.get("⚪ BEKLE", 0)))
-                show = ["Parite", "Sinyal", "Ticker UTC", "Sinyal mumu", "Fiyat ($)",
+                r3.metric("🟡🟠 Yaklaşan aday", int(radar["Fırsat durumu"].isin(["🟡 LONG adayı", "🟠 SHORT adayı"]).sum()))
+                show = ["Parite", "Fırsat durumu", "LONG koşul", "SHORT koşul", "Eksik koşul", "Sinyal", "Ticker UTC", "Sinyal mumu", "Fiyat ($)",
                         "Referans giriş ($)", "Stop ($)", "Hedef ($)",
                         "Stop uzaklık %", "Hedef uzaklık %", "Risk/Ödül",
                         "24s hacim yaklaşık ($)", "RSI", "ADX", "Hacim katı",
                         "Funding %", "OI ($)", "20 mum destek ($)",
                         "20 mum direnç ($)", "ATR14 %", "Risk notları"]
                 def okx_signal_color(row):
-                    signal = row["Sinyal"]
+                    signal = row["Fırsat durumu"]
                     bg = ("background-color: #143d2b; color: #e6fff0" if signal == "🟢 LONG"
                           else "background-color: #52232b; color: #fff0f0" if signal == "🔴 SHORT"
+                          else "background-color: #54431b; color: #fff4d0" if signal == "🟡 LONG adayı"
+                          else "background-color: #5a351b; color: #fff0d7" if signal == "🟠 SHORT adayı"
                           else "")
                     return [bg] * len(row)
                 st.dataframe(radar[show].style.apply(okx_signal_color, axis=1),
