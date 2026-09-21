@@ -450,6 +450,8 @@ with backtest_tab:
                 if n < 30:
                     st.warning(f"Yalnızca {n} işlem var; örneklem küçük. Sonuçlar istatistiksel olarak güvenilir kabul edilmemeli.")
                 st.caption("Bileşik sonuç, her işlemde sermayenin tamamının 1x kullanıldığını ve pozisyonların çakışmadığını varsayar. SHORT sonuçları spot mumlardan sentetik hesaplanır. Gerçek kaldıraç, marjin, fonlama, likidasyon, spread değişimi ve vergiler hesaplanmaz.")
+        except Exception as exc:
+            st.error(f"Geçmiş test hesaplanamadı: {exc}")
 
 with futures:
     st.subheader("Kaldıraçlı işlemlerde senaryo ve risk")
