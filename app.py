@@ -11,7 +11,7 @@ import plotly.graph_objects as go
 import requests
 import streamlit as st
 
-st.set_page_config(page_title="Burak Crypto Radar V2.1", page_icon="📡", layout="wide")
+st.set_page_config(page_title="Burak Crypto Radar V2.2", page_icon="📡", layout="wide")
 CG = "https://api.coingecko.com/api/v3"
 HEADERS = {"User-Agent": "BurakCryptoRadar/1.0", "accept": "application/json"}
 STABLE = {"usdt", "usdc", "dai", "fdusd", "tusd", "usde", "usdd", "pyusd", "frax"}
@@ -187,6 +187,64 @@ def levels_and_risks(df, row):
             "Risk notları": " | ".join(flags) if flags else "Tanımlı risk eşiği tetiklenmedi"}
 
 
+
+def backtest_directional(df, hold_bars=4, fee_pct=.1, slip_pct=.05):
+    """Non-overlapping directional signal study. Entry next candle open,
+    exit after hold_bars at close. Costs charged at both ends.
+    Historical spot OHLC is a proxy, NOT futures execution data."""
+    if len(df) < 215:
+        return pd.DataFrame()
+    c, h, l, vol = df.close, df.high, df.low, df.quote_volume
+    e20 = c.ewm(span=20, adjust=False).mean()
+    e50 = c.ewm(span=50, adjust=False).mean()
+    delta = c.diff()
+    gain = delta.clip(lower=0).ewm(alpha=1/14, adjust=False).mean()
+    loss = (-delta.clip(upper=0)).ewm(alpha=1/14, adjust=False).mean()
+    rsi = 100 - 100 / (1 + gain / loss.replace(0, np.nan))
+    macd = c.ewm(span=12, adjust=False).mean() - c.ewm(span=26, adjust=False).mean()
+    sig = macd.ewm(span=9, adjust=False).mean()
+    up, down = h.diff(), -l.diff()
+    pdm = up.where((up > down) & (up > 0), 0.0)
+    mdm = down.where((down > up) & (down > 0), 0.0)
+    tr = pd.concat([h-l, (h-c.shift()).abs(), (l-c.shift()).abs()], axis=1).max(axis=1)
+    atr = tr.ewm(alpha=1/14, adjust=False).mean().replace(0, np.nan)
+    pdi = 100 * pdm.ewm(alpha=1/14, adjust=False).mean() / atr
+    mdi = 100 * mdm.ewm(alpha=1/14, adjust=False).mean() / atr
+    dx = 100 * (pdi-mdi).abs() / (pdi+mdi).replace(0, np.nan)
+    adx = dx.ewm(alpha=1/14, adjust=False).mean()
+    vr = vol / vol.shift(1).rolling(20).mean().replace(0, np.nan)
+    long_cond = ((c > e20) & (e20 > e50) & (macd > sig)
+                 & (pdi > mdi) & (adx >= 20) & rsi.between(45, 68)
+                 & (vr >= 1.2))
+    short_cond = ((c < e20) & (e20 < e50) & (macd < sig)
+                  & (mdi > pdi) & (adx >= 20) & rsi.between(32, 55)
+                  & (vr >= 1.2))
+    state = np.where(long_cond, 1, np.where(short_cond, -1, 0))
+    trades = []
+    i = 205
+    while i + hold_bars < len(df):
+        direction = int(state[i])
+        # One trade per new directional event; no repeated entries on same signal.
+        if direction == 0 or state[i-1] == direction:
+            i += 1
+            continue
+        entry_idx = i + 1
+        exit_idx = i + hold_bars
+        entry = float(df.open.iloc[entry_idx])
+        exit_price = float(c.iloc[exit_idx])
+        if not (np.isfinite(entry) and np.isfinite(exit_price) and entry > 0):
+            i += 1
+            continue
+        gross = direction * (exit_price / entry - 1) * 100
+        net = gross - 2 * (fee_pct + slip_pct)
+        trades.append({"Sinyal UTC": df.date.iloc[i], "Yön": "LONG" if direction == 1 else "SHORT",
+                       "Giriş UTC": df.date.iloc[entry_idx], "Çıkış UTC": df.date.iloc[exit_idx],
+                       "Giriş ($)": entry, "Çıkış ($)": exit_price,
+                       "Brüt %": round(gross, 3), "Net %": round(net, 3)})
+        i = exit_idx + 1
+    return pd.DataFrame(trades)
+
+
 def fundamental(row):
     mc, fdv, vol = row.get("market_cap"), row.get("fully_diluted_valuation"), row.get("total_volume")
     if pd.isna(mc) or mc <= 0 or pd.isna(fdv) or fdv <= 0 or pd.isna(vol):
@@ -200,7 +258,7 @@ def fundamental(row):
     return cap_points + dilution_points + turnover_points + liquid_points
 
 
-st.title("📡 BURAK CRYPTO RADAR V2.1")
+st.title("📡 BURAK CRYPTO RADAR V2.2")
 st.caption("Piyasa araştırması • Spot aday taraması ve ayrı vadeli risk görünümü • Emir göndermez")
 with st.sidebar:
     st.header("Tarama ayarları")
@@ -248,7 +306,7 @@ c2.metric("Filtreyi geçen", len(selected))
 c3.metric("Teknik analiz limiti", min(limit, len(selected)))
 c4.metric("Son yükleme (UTC)", datetime.now(timezone.utc).strftime("%H:%M"))
 
-spot, futures, methodology = st.tabs(["🔎 Spot araştırma", "⚠️ Vadeli risk ekranı", "ℹ️ Metodoloji"])
+spot, backtest_tab, futures, methodology = st.tabs(["🔎 Spot araştırma", "📊 Sinyal geçmiş testi", "⚠️ Vadeli risk ekranı", "ℹ️ Metodoloji"])
 with st.spinner("Seçili adaylar için teknik veriler hesaplanıyor..."):
     try:
         symbols = exchange_symbols()
@@ -344,6 +402,55 @@ with spot:
     st.download_button("📥 Filtre sonuçlarını CSV indir", view.to_csv(index=False).encode("utf-8-sig"),
                        "burak_crypto_radar.csv", "text/csv", disabled=view.empty)
 
+
+with backtest_tab:
+    st.subheader("LONG / SHORT geçmiş sinyal testi")
+    st.caption("Son kapanmış mumda oluşan YENİ yön sinyali → sonraki mum açılışında varsayımsal giriş → seçilen mum sayısı sonunda kapanışta çıkış. Çakışan pozisyonlar alınmaz.")
+    st.warning("Bu bir geçmiş veri simülasyonudur; kârlılık garantisi, canlı emir veya vadeli piyasa backtesti değildir. Kraken spot fiyatları kullanılır; fonlama, likidasyon ve emir defteri etkileri dahil değildir.")
+    if tech.empty:
+        st.info("Teknik veri yok. Önce Spot araştırma için geçerli Kraken paritesi bulunan coinleri tara.")
+    else:
+        bt_options = view[view.id.isin(tech.id)]
+        bt_coin = st.selectbox("Test edilecek coin", bt_options.id.tolist(),
+                               format_func=lambda x: bt_options.loc[bt_options.id == x, "name"].iloc[0],
+                               key="backtest_coin")
+        b1, b2, b3 = st.columns(3)
+        with b1:
+            hold = st.selectbox("Pozisyon süresi (mum)", [1, 2, 4, 8, 12, 24], index=2)
+        with b2:
+            fee = st.number_input("Tek yön komisyon (%)", min_value=0.0, max_value=2.0,
+                                  value=0.1, step=0.01)
+        with b3:
+            slip = st.number_input("Tek yön kayma (%)", min_value=0.0, max_value=2.0,
+                                   value=0.05, step=0.01)
+        bt_row = bt_options.loc[bt_options.id == bt_coin].iloc[0]
+        try:
+            bt_df = candles(symbols[str(bt_row.symbol).upper()][0], interval)
+            trades = backtest_directional(bt_df, hold, fee, slip)
+            st.caption(f"Veri aralığı: {bt_df.date.iloc[0]:%Y-%m-%d} – {bt_df.date.iloc[-1]:%Y-%m-%d} UTC | {interval} | {len(bt_df)} kapanmış mum. İlk 205 mum indikatör ısınması için ayrılır.")
+            if trades.empty:
+                st.info("Bu dönemde kuralları karşılayan yeni ve tamamlanmış işlem bulunamadı. Başka coin veya zaman dilimi seç.")
+            else:
+                n = len(trades)
+                wins = int((trades["Net %"] > 0).sum())
+                compounded = (1 + trades["Net %"] / 100).cumprod()
+                dd = (compounded / compounded.cummax() - 1) * 100
+                m1, m2, m3, m4 = st.columns(4)
+                m1.metric("İşlem", n)
+                m2.metric("Net kazançlı işlem", f"%{100*wins/n:.1f}")
+                m3.metric("Ortalama net / işlem", f"%{trades['Net %'].mean():.2f}")
+                m4.metric("En yüksek gerileme", f"%{dd.min():.2f}")
+                st.metric("Bileşik varsayımsal sonuç (1x, tüm sermaye)", f"%{(compounded.iloc[-1]-1)*100:.2f}")
+                st.line_chart(pd.DataFrame({"Bileşik çarpan": compounded.to_numpy()},
+                                           index=trades["Çıkış UTC"]))
+                st.dataframe(trades.sort_values("Sinyal UTC", ascending=False),
+                             hide_index=True, use_container_width=True)
+                st.download_button("📥 Geçmiş test CSV", trades.to_csv(index=False).encode("utf-8-sig"),
+                                   f"backtest_{bt_coin}_{interval}.csv", "text/csv")
+                if n < 30:
+                    st.warning(f"Yalnızca {n} işlem var; örneklem küçük. Sonuçlar istatistiksel olarak güvenilir kabul edilmemeli.")
+                st.caption("Bileşik sonuç, her işlemde sermayenin tamamının 1x kullanıldığını ve pozisyonların çakışmadığını varsayar. SHORT sonuçları spot mumlardan sentetik hesaplanır. Gerçek kaldıraç, marjin, fonlama, likidasyon, spread değişimi ve vergiler hesaplanmaz.")
+
 with futures:
     st.subheader("Kaldıraçlı işlemlerde senaryo ve risk")
     st.info("V2 vadeli risk ekranı hesaplama amaçlıdır. Fonlama oranı ve açık pozisyon (OI) henüz canlı bağlanmadı; bunlar spot verilerinden türetilmez.")
@@ -358,7 +465,7 @@ with futures:
     st.caption("Komisyon, fonlama, slippage, bakım teminatı ve borsaya özgü likidasyon kuralları dahil değildir. Likidasyon bu basit hesaplamadan daha önce gerçekleşebilir.")
 
 with methodology:
-    st.markdown("""**V2.1 yön etiketleri:** LONG için kapanış > EMA20 > EMA50, MACD > sinyal çizgisi, +DI > -DI, ADX ≥20, RSI 45–68 ve son kapanmış mumun hacmi önceki 20 mum ortalamasının ≥1,2 katı olmalı. SHORT için kapanış < EMA20 < EMA50, MACD < sinyal çizgisi, -DI > +DI, ADX ≥20, RSI 32–55 ve aynı hacim koşulu aranır. Diğer durumlar BEKLE; veri eksikse VERİ YOK. Birleşik araştırma skoru yön etiketini belirlemez. Bu koşullar geriye dönük test edilmemiştir; kaldıraçlı işlem önerisi değildir. Kraken OHLC 5 dakika önbellekli ve sadece kapanmış mum kullanılır; 1d seçimi gün içinde sürekli değişen sinyal vermez.\n\n**V2 yenilikleri:** Son 20 tamamlanmış mumun destek/direnç seviyeleri, EMA20/50/200, ATR14 volatilitesi, dolaşımdaki arz oranı ve açıklanabilir risk notları. Bunlar fiyat hedefi veya işlem sinyali değildir.\n\n**Veri kaynakları:** CoinGecko `/coins/markets` (market cap, FDV, 24 saatlik hacim); Kraken public `/AssetPairs` ve `/OHLC` (OHLCV). Kraken spot USD/USDT paritesi bulunmayan coinlerde teknik skor boş kalır. CoinGecko ve Kraken farklı fiyat/arz anlık görüntüleri sunabilir.
+    st.markdown("""**V2.2 geçmiş test:** Aynı LONG/SHORT koşulları geçmiş kapanmış mumlarda tekrar hesaplanır. Yalnızca yeni sinyalde, bir sonraki mum açılışında giriş varsayılır; seçilen süre sonunda kapanışta çıkılır. Tek yön komisyon ve kayma iki kez düşülür. Çakışan işlemler atlanır. Başarı oranı yalnızca net getirisi pozitif işlemlerin payıdır. Sonuçlar sınırlı Kraken OHLC geçmişine ve seçilen coin/zaman dilimine özgüdür; ileriye dönük performans göstermez.\n\n**V2.1 yön etiketleri:** LONG için kapanış > EMA20 > EMA50, MACD > sinyal çizgisi, +DI > -DI, ADX ≥20, RSI 45–68 ve son kapanmış mumun hacmi önceki 20 mum ortalamasının ≥1,2 katı olmalı. SHORT için kapanış < EMA20 < EMA50, MACD < sinyal çizgisi, -DI > +DI, ADX ≥20, RSI 32–55 ve aynı hacim koşulu aranır. Diğer durumlar BEKLE; veri eksikse VERİ YOK. Birleşik araştırma skoru yön etiketini belirlemez. Bu koşullar geriye dönük test edilmemiştir; kaldıraçlı işlem önerisi değildir. Kraken OHLC 5 dakika önbellekli ve sadece kapanmış mum kullanılır; 1d seçimi gün içinde sürekli değişen sinyal vermez.\n\n**V2 yenilikleri:** Son 20 tamamlanmış mumun destek/direnç seviyeleri, EMA20/50/200, ATR14 volatilitesi, dolaşımdaki arz oranı ve açıklanabilir risk notları. Bunlar fiyat hedefi veya işlem sinyali değildir.\n\n**Veri kaynakları:** CoinGecko `/coins/markets` (market cap, FDV, 24 saatlik hacim); Kraken public `/AssetPairs` ve `/OHLC` (OHLCV). Kraken spot USD/USDT paritesi bulunmayan coinlerde teknik skor boş kalır. CoinGecko ve Kraken farklı fiyat/arz anlık görüntüleri sunabilir.
 
 **Temel ön skor (0–100):** Market cap bandı 25, FDV/MC 25, hacim/MC 25, mutlak hacim 25. Bunlar kullanıcı tarafından değiştirilebilir filtrelere ek, sabit ve açıklanabilir araştırma puanlarıdır.
 
