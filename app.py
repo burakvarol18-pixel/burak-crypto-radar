@@ -312,6 +312,32 @@ with st.sidebar:
                         st.error(message + " — " + response.text[:220])
                 except requests.exceptions.RequestException as exc:
                     st.error(f"{label}: {type(exc).__name__}: {str(exc)[:140]}")
+    with st.expander("🧪 OKX vadeli / perpetual bağlantı testi"):
+        st.caption("Streamlit sunucusundan OKX herkese açık API testi. API anahtarı veya hesap bağlantısı gerekmez. SWAP = perpetual, FUTURES = vadeli teslimat sözleşmesi.")
+        if st.button("OKX bağlantısını test et"):
+            checks = [
+                ("OKX sunucu saati", "/api/v5/public/time", None),
+                ("OKX perpetual pariteler", "/api/v5/public/instruments", {"instType": "SWAP"}),
+                ("OKX vadeli pariteler", "/api/v5/public/instruments", {"instType": "FUTURES"}),
+                ("BTC-USDT perpetual mum", "/api/v5/market/candles", {"instId": "BTC-USDT-SWAP", "bar": "1H", "limit": "2"}),
+                ("BTC-USDT perpetual fonlama", "/api/v5/public/funding-rate", {"instId": "BTC-USDT-SWAP"}),
+                ("BTC-USDT perpetual açık pozisyon", "/api/v5/public/open-interest", {"instType": "SWAP", "instId": "BTC-USDT-SWAP"}),
+                ("OKX perpetual fiyatlar", "/api/v5/market/tickers", {"instType": "SWAP"}),
+            ]
+            for label, path, params in checks:
+                try:
+                    response = requests.get("https://www.okx.com" + path, params=params, headers=HEADERS, timeout=9)
+                    if response.status_code != 200:
+                        st.error(f"{label}: HTTP {response.status_code} — {response.text[:180]}")
+                        continue
+                    payload = response.json()
+                    if payload.get("code") == "0":
+                        data = payload.get("data", [])
+                        st.success(f"{label}: HTTP 200 / OKX code 0 — erişim var" + (f" ({len(data)} kayıt)" if isinstance(data, list) else ""))
+                    else:
+                        st.error(f"{label}: HTTP 200 fakat OKX hata kodu {payload.get('code')} — {str(payload.get('msg', ''))[:150]}")
+                except (requests.exceptions.RequestException, ValueError) as exc:
+                    st.error(f"{label}: {type(exc).__name__}: {str(exc)[:140]}")
     if st.button("🔄 Önbelleği temizle ve yeniden tara"):
         st.cache_data.clear()
         st.rerun()
