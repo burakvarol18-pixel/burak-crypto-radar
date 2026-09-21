@@ -333,8 +333,7 @@ def analyze_okx_coin(item, okx_interval, stop_mult, target_mult):
     inst = item["Parite"]
     frame = okx_candles(inst, okx_interval)
     if frame.iloc[-1]["confirm"] != "0":
-        okx_fail += 1
-        continue
+        raise ValueError("Açık mum alınamadı")
     frame = frame.copy()
     live_price = float(item["Fiyat ($)"])
     frame.loc[frame.index[-1], "close"] = live_price
@@ -346,8 +345,7 @@ def analyze_okx_coin(item, okx_interval, stop_mult, target_mult):
     frame.loc[frame.index[-1], "quote_volume"] /= fraction
     indicators = technical(frame)
     if indicators is None:
-        okx_fail += 1
-        continue
+        raise ValueError("Yeterli teknik mum verisi yok")
     fib = {}
     for tf in ("1h", "4h"):
         fib_frame = frame if tf == okx_interval else okx_candles(inst, tf)
