@@ -1,4 +1,4 @@
-"""BURAK CRYPTO RADAR V4.1 — OKX LIVE USDT perpetual market research only.
+"""BURAK CRYPTO RADAR V4.2 — OKX LIVE USDT perpetual market research only.
 No orders, account access, or leverage execution.
 """
 import numpy as np
@@ -7,7 +7,7 @@ import plotly.graph_objects as go
 import requests
 import streamlit as st
 
-st.set_page_config(page_title="Burak Crypto Radar V4.1 — OKX LIVE", page_icon="📡", layout="wide")
+st.set_page_config(page_title="Burak Crypto Radar V4.2 — OKX LIVE", page_icon="📡", layout="wide")
 HEADERS = {"User-Agent": "BurakCryptoRadar/1.0", "accept": "application/json"}
 STABLE = {"usdt", "usdc", "dai", "fdusd", "tusd", "usde", "usdd", "pyusd", "frax"}
 
@@ -107,6 +107,26 @@ def technical(df):
             "ADX": round(a, 1), "Hacim katı": round(v, 2),
             "EMA20 üstü": bool(c > e20.iloc[-1]), "EMA50 üstü": bool(c > e50.iloc[-1]),
             "EMA200 üstü": bool(c > e200.iloc[-1]), "Kapanış": c}
+
+
+def fibonacci_check(df, price, side):
+    closed = df[df["confirm"] == "1"].tail(100)
+    if len(closed) < 30:
+        return False, float("nan"), float("nan")
+    hi, lo = float(closed.high.max()), float(closed.low.min())
+    prev = closed.close.shift()
+    tr = pd.concat([closed.high-closed.low, (closed.high-prev).abs(),
+                    (closed.low-prev).abs()], axis=1).max(axis=1)
+    atr = float(tr.ewm(alpha=1/14, adjust=False).mean().iloc[-1])
+    if hi <= lo or not np.isfinite(atr) or atr <= 0:
+        return False, float("nan"), float("nan")
+    levels = sorted(lo + (hi-lo)*x for x in (0, .236, .382, .5, .618, .786, 1))
+    eligible = [x for x in levels if x <= price] if side == "LONG" else [x for x in levels if x >= price]
+    if not eligible:
+        return False, float("nan"), float("nan")
+    level = max(eligible) if side == "LONG" else min(eligible)
+    distance = abs(price-level)/atr
+    return distance <= 1, level, distance
 
 
 def levels_and_risks(df, row):
