@@ -1,4 +1,4 @@
-"""BURAK CRYPTO RADAR V5.2 — OKX LIVE USDT perpetual market research only.
+"""BURAK CRYPTO RADAR V5.3 — OKX + BIST USDT perpetual market research only.
 No orders, account access, or leverage execution.
 """
 import numpy as np
@@ -7,7 +7,7 @@ import plotly.graph_objects as go
 import requests
 import streamlit as st
 
-st.set_page_config(page_title="Burak Crypto Radar V5.2 — OKX LIVE", page_icon="📡", layout="wide")
+st.set_page_config(page_title="Burak Crypto Radar V5.3 — OKX + BIST", page_icon="📡", layout="wide")
 HEADERS = {"User-Agent": "BurakCryptoRadar/1.0", "accept": "application/json"}
 STABLE = {"usdt", "usdc", "dai", "fdusd", "tusd", "usde", "usdd", "pyusd", "frax"}
 
@@ -317,7 +317,7 @@ def okx_derivatives(inst_id):
 
 
 
-st.title("📡 BURAK CRYPTO RADAR V5.2 — OKX")
+st.title("📡 BURAK CRYPTO RADAR V5.3 — OKX + BIST")
 st.caption("Yalnızca OKX USDT perpetual verileri • LONG / SHORT araştırma sinyalleri • Otomatik emir göndermez")
 with st.sidebar:
     st.header("OKX veri ayarları")
@@ -326,7 +326,7 @@ with st.sidebar:
         st.cache_data.clear()
         st.rerun()
 
-radar_tab, whale_tab, market_tab, futures, methodology = st.tabs(["🟢🔴 OKX Perpetual Radar", "🐋 OKX Balina / Akıllı Para", "🌍 OKX Piyasa Yönü", "⚠️ Vadeli risk ekranı", "ℹ️ Metodoloji"])
+radar_tab, whale_tab, market_tab, bist_tab, futures, methodology = st.tabs(["🟢🔴 OKX Perpetual Radar", "🐋 OKX Balina / Akıllı Para", "🌍 OKX Piyasa Yönü", "🇹🇷 BIST Radar", "⚠️ Vadeli risk ekranı", "ℹ️ Metodoloji"])
 
 def analyze_okx_coin(item, okx_interval, stop_mult, target_mult):
     inst = item["Parite"]
@@ -868,6 +868,103 @@ with market_tab:
                                   index=1, format_func=lambda x: f"{x} dakika",
                                   key="market_refresh")
     st.fragment(run_every=f"{market_refresh * 60}s")(market_direction_radar)()
+
+
+
+def bist_parse_csv(upload):
+    """User-supplied licensed/exported daily OHLCV, no scraping or implicit Midas API."""
+    df = pd.read_csv(upload, sep=None, engine="python", encoding="utf-8-sig")
+    df.columns = [str(x).strip().lower() for x in df.columns]
+    aliases = {"symbol": "symbol", "ticker": "symbol", "sembol": "symbol",
+               "hisse": "symbol", "date": "date", "tarih": "date",
+               "open": "open", "açılış": "open", "acilis": "open",
+               "high": "high", "yüksek": "high", "yuksek": "high",
+               "low": "low", "düşük": "low", "dusuk": "low",
+               "close": "close", "kapanış": "close", "kapanis": "close",
+               "volume": "volume", "hacim": "volume"}
+    df = df.rename(columns={c: aliases.get(c, c) for c in df.columns})
+    required = {"symbol", "date", "open", "high", "low", "close", "volume"}
+    missing = required - set(df.columns)
+    if missing:
+        raise ValueError("Eksik CSV sütunları: " + ", ".join(sorted(missing)))
+    df["symbol"] = df["symbol"].astype(str).str.strip().str.upper().str.replace(".IS", "", regex=False)
+    df["date"] = pd.to_datetime(df["date"], errors="coerce", dayfirst=True)
+    for c in ("open", "high", "low", "close", "volume"):
+        df[c] = pd.to_numeric(df[c], errors="coerce")
+    df = df.dropna(subset=["symbol", "date", "open", "high", "low", "close", "volume"])
+    df = df[(df[["open", "high", "low", "close"]] > 0).all(axis=1) & (df["volume"] >= 0)]
+    df = df.drop_duplicates(["symbol", "date"], keep="last").sort_values(["symbol", "date"])
+    if df.empty:
+        raise ValueError("Geçerli günlük fiyat satırı bulunamadı")
+    return df
+
+
+def bist_resample_weekly(df):
+    weekly = (df.set_index("date").resample("W-FRI")
+              .agg({"open": "first", "high": "max", "low": "min",
+                    "close": "last", "volume": "sum"}).dropna().reset_index())
+    # Exclude current unfinished week to prevent false weekly confirmations.
+    today = pd.Timestamp.now(tz="Europe/Istanbul").tz_localize(None).normalize()
+    week_end = today + pd.Timedelta(days=(4 - today.weekday()) % 7)
+    if today < week_end:
+        weekly = weekly[weekly["date"] < week_end]
+    return weekly
+
+
+def bist_radar():
+    st.subheader("🇹🇷 BIST Radar — Günlük ve Haftalık")
+    st.warning("Midas'a bağlanan doğrulanmış bir genel API kullanılmıyor. Bu sekme yalnızca kullanım hakkına sahip olduğun günlük OHLCV CSV dosyasını yerel oturumda analiz eder; Midas hesabına erişmez ve web sayfasından veri kazımaz.")
+    st.caption("CSV sütunları: symbol,date,open,high,low,close,volume. Her hisse için ayrı günlük satırlar; örn. THYAO,2025-01-02,300,310,295,305,12000000. Fiyatlar TL, volume adet olmalı. Bölünme/temettü düzeltmelerinin tutarlı olması gerekir.")
+    upload = st.file_uploader("📂 BIST günlük fiyat/hacim CSV yükle", type=["csv"], key="bist_csv")
+    if upload is None:
+        st.info("Veri yüklenmedi. Canlı BIST veya Midas fiyatı gösterilmiyor; dosya yüklendiğinde teknik tarama açılır.")
+        return
+    try:
+        data = bist_parse_csv(upload)
+        results, issues = [], []
+        for symbol, group in data.groupby("symbol"):
+            daily = group.rename(columns={"volume": "quote_volume"}).copy()
+            weekly = bist_resample_weekly(group).rename(columns={"volume": "quote_volume"})
+            for tf, frame in (("Günlük", daily), ("Haftalık", weekly)):
+                try:
+                    if len(frame) < 205:
+                        raise ValueError(f"{len(frame)}/205 kapanmış mum")
+                    frame["confirm"] = "1"
+                    reading = market_trend_reading(frame, symbol, tf)
+                    close = frame.close
+                    vr = float(frame.quote_volume.iloc[-1] / frame.quote_volume.iloc[-21:-1].mean()) if frame.quote_volume.iloc[-21:-1].mean() > 0 else np.nan
+                    reading["Hacim katı"] = round(vr, 2) if np.isfinite(vr) else np.nan
+                    reading["Veri son tarihi"] = frame.date.iloc[-1]
+                    results.append(reading)
+                except Exception as exc:
+                    issues.append(f"{symbol} {tf}: {exc}")
+        if not results:
+            st.warning("Yeterli günlük/haftalık geçmiş yok. Günlük analiz için 205 işlem günü; haftalık analiz için yaklaşık 4 yıllık haftalık veri gerekli.")
+        else:
+            table = pd.DataFrame(results)
+            for tf in ("Günlük", "Haftalık"):
+                sub = table[table["Zaman dilimi"] == tf]
+                if sub.empty:
+                    continue
+                up = int((sub["Trend"] == "🟢 Yükseliş").sum())
+                down = int((sub["Trend"] == "🔴 Düşüş").sum())
+                c1, c2, c3 = st.columns(3)
+                c1.metric(f"{tf} yükseliş payı", f"{up/len(sub):.0%}")
+                c2.metric(f"{tf} düşüş payı", f"{down/len(sub):.0%}")
+                c3.metric(f"{tf} incelenen hisse", len(sub))
+            st.dataframe(table, hide_index=True, use_container_width=True)
+            st.download_button("📥 BIST analiz CSV", table.to_csv(index=False).encode("utf-8-sig"),
+                               "burak_bist_radar.csv", "text/csv", key="bist_download")
+            st.caption("Piyasa genişliği yalnızca yüklenen ve yeterli geçmişe sahip hisseleri kapsar; otomatik BIST 100 evreni değildir. Günlük ve haftalık sinyaller kapanmış mumlara dayanır.")
+        if issues:
+            with st.expander(f"Eksik analizler ({len(issues)})"):
+                st.write("\n".join(issues[:250]))
+    except Exception as exc:
+        st.error(f"BIST CSV analiz edilemedi: {type(exc).__name__}: {exc}")
+
+
+with bist_tab:
+    bist_radar()
 
 
 with futures:
