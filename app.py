@@ -427,7 +427,7 @@ def analyze_okx_coin(item, okx_interval, stop_mult, target_mult, cfg):
 
 def live_radar():
         st.subheader("OKX USDT Perpetual — LONG / SHORT Radar")
-        st.caption(f"OKX canlı ticker ve açık perpetual mumundan geçici LONG/SHORT adayları. Sol menüdeki seçili koşullar uygulanır. RSI14: LONG {condition_cfg[\"long_rsi\"][0]}–{condition_cfg[\"long_rsi\"][1]}, SHORT {condition_cfg[\"short_rsi\"][0]}–{condition_cfg[\"short_rsi\"][1]}. Hesap bağlanmaz, emir gönderilmez.")
+        st.caption(f"OKX canlı ticker ve açık perpetual mumundan geçici LONG/SHORT adayları. Sol menüdeki seçili koşullar uygulanır. RSI14: LONG {condition_cfg['long_rsi'][0]}–{condition_cfg['long_rsi'][1]}, SHORT {condition_cfg['short_rsi'][0]}–{condition_cfg['short_rsi'][1]}. Hesap bağlanmaz, emir gönderilmez.")
         p1, p2, p3 = st.columns(3)
         with p1:
             okx_interval = st.selectbox("Perpetual zaman dilimi", ["1h", "4h", "1d"], key="okx_interval")
