@@ -1,4 +1,4 @@
-"""BURAK CRYPTO RADAR V5.4 — OKX + BIST USDT perpetual market research only.
+"""BURAK CRYPTO RADAR V5.5 — OKX + BIST USDT perpetual market research only.
 No orders, account access, or leverage execution.
 """
 import numpy as np
@@ -7,7 +7,7 @@ import plotly.graph_objects as go
 import requests
 import streamlit as st
 
-st.set_page_config(page_title="Burak Crypto Radar V5.4 — OKX + BIST", page_icon="📡", layout="wide")
+st.set_page_config(page_title="Burak Crypto Radar V5.5 — OKX + BIST", page_icon="📡", layout="wide")
 HEADERS = {"User-Agent": "BurakCryptoRadar/1.0", "accept": "application/json"}
 STABLE = {"usdt", "usdc", "dai", "fdusd", "tusd", "usde", "usdd", "pyusd", "frax"}
 
@@ -314,7 +314,7 @@ def okx_derivatives(inst_id):
 
 
 
-st.title("📡 BURAK CRYPTO RADAR V5.4 — OKX + BIST")
+st.title("📡 BURAK CRYPTO RADAR V5.5 — OKX + BIST")
 st.caption("Yalnızca OKX USDT perpetual verileri • LONG / SHORT araştırma sinyalleri • Otomatik emir göndermez")
 with st.sidebar:
     st.header("🎛️ Radar koşulları")
@@ -894,11 +894,135 @@ def market_direction_radar():
     st.caption("Trend: ADX≥20 ve 5 yön koşulundan en az 4'ü. Geniş katılımlı yön: tarananların ≥%60'ı aynı yönde, BTC ve ETH de aynı yönde. Eşikler araştırma amaçlıdır; getiri/başarı garantisi değildir. OI/funding bu sürümde piyasa yönü sınıflandırmasına dahil edilmez.")
 
 
+
+@st.cache_data(ttl=20, show_spinner=False)
+def okx_book_snapshot(inst_id):
+    """Public resting limit orders, not open positions or liquidation levels."""
+    books = okx_public("/api/v5/market/books", {"instId": inst_id, "sz": "400"})
+    if not books:
+        raise ValueError("OKX emir defteri boş")
+    instrument = okx_public("/api/v5/public/instruments",
+                            {"instType": "SWAP", "instId": inst_id})
+    if not instrument:
+        raise ValueError("Sözleşme çarpanı alınamadı")
+    meta = instrument[0]
+    ct_val = float(meta.get("ctVal") or 0)
+    ct_mult = float(meta.get("ctMult") or 1)
+    base = inst_id.removesuffix("-USDT-SWAP")
+    if ct_val <= 0 or ct_mult <= 0 or meta.get("ctValCcy") != base:
+        raise ValueError("Sözleşme nominali güvenle USD'ye çevrilemedi")
+    rows = []
+    for side, key in (("ALIŞ", "bids"), ("SATIŞ", "asks")):
+        for entry in books[0].get(key, []):
+            try:
+                price, contracts = float(entry[0]), float(entry[1])
+                count = int(entry[3]) if len(entry) > 3 else 0
+                if price > 0 and contracts > 0:
+                    rows.append({"Taraf": side, "Fiyat ($)": price,
+                                 "Emir (kontrat)": contracts,
+                                 "Nominal ($)": price * contracts * ct_val * ct_mult,
+                                 "Emir sayısı": count})
+            except (ValueError, TypeError, IndexError):
+                continue
+    if not rows:
+        raise ValueError("Geçerli emir defteri seviyesi yok")
+    return pd.DataFrame(rows), pd.to_datetime(int(books[0]["ts"]), unit="ms", utc=True)
+
+
+def orderbook_heatmap():
+    st.subheader("🔥 OKX Emir Defteri Isı Haritası")
+    st.info("Bu harita gerçekleşmemiş BEKLEYEN limit alış/satış emirlerini gösterir; açılmış LONG/SHORT pozisyonlarını, pozisyonların giriş fiyatlarını veya likidasyon kümelerini göstermez. Emirler anlık iptal edilebilir.")
+    x1, x2, x3 = st.columns([2, 1, 1])
+    with x1:
+        symbol = st.text_input("USDT perpetual coin", "BTC", key="depth_symbol",
+                               help="BTC, ETH, SOL veya BTC-USDT-SWAP yazabilirsin.")
+    with x2:
+        distance = st.selectbox("Fiyat aralığı", [0.5, 1., 2., 5., 10.],
+                                index=3, format_func=lambda v: f"±%{v:g}", key="depth_range")
+    with x3:
+        bands = st.selectbox("Fiyat dilimi", [30, 50, 80, 100],
+                             index=1, key="depth_bands")
+    raw = symbol.strip().upper().replace("/", "-").replace(" ", "")
+    base = raw.removesuffix("-USDT-SWAP").removesuffix("-USDT")
+    if not base or not base.replace("-", "").isalnum():
+        st.warning("Geçerli coin sembolü gir.")
+        return
+    inst_id = base + "-USDT-SWAP"
+    try:
+        with st.spinner(f"{inst_id} emir defteri alınıyor..."):
+            df, ts = okx_book_snapshot(inst_id)
+        best_bid = df.loc[df["Taraf"] == "ALIŞ", "Fiyat ($)"].max()
+        best_ask = df.loc[df["Taraf"] == "SATIŞ", "Fiyat ($)"].min()
+        if not np.isfinite(best_bid) or not np.isfinite(best_ask):
+            st.warning("Alış ve satış tarafları birlikte alınamadı.")
+            return
+        mid = (best_bid + best_ask) / 2
+        lo, hi = mid * (1 - distance / 100), mid * (1 + distance / 100)
+        inside = df[df["Fiyat ($)"].between(lo, hi)].copy()
+        if inside.empty:
+            st.warning("Seçilen fiyat aralığında emir bulunamadı.")
+            return
+        edges = np.linspace(lo, hi, bands + 1)
+        centers = (edges[:-1] + edges[1:]) / 2
+        bid = inside[inside["Taraf"] == "ALIŞ"]
+        ask = inside[inside["Taraf"] == "SATIŞ"]
+        buy_usd = np.histogram(bid["Fiyat ($)"], bins=edges,
+                               weights=bid["Nominal ($)"])[0]
+        sell_usd = np.histogram(ask["Fiyat ($)"], bins=edges,
+                                weights=ask["Nominal ($)"])[0]
+        values = np.column_stack([buy_usd, sell_usd])
+        peak = float(values.max())
+        if peak <= 0:
+            st.warning("Gösterilebilir emir nominali bulunamadı.")
+            return
+        heat = go.Figure(go.Heatmap(
+            x=["🟢 ALIŞ", "🔴 SATIŞ"], y=centers,
+            z=np.log1p(values), customdata=values,
+            colorscale=[[0, "#111827"], [0.15, "#334155"], [0.4, "#0f766e"],
+                        [0.7, "#f59e0b"], [1, "#ef4444"]],
+            zmin=0, zmax=np.log1p(peak),
+            hovertemplate="Taraf: %{x}<br>Fiyat: $%{y:,.6g}<br>Bekleyen emir: $%{customdata:,.0f}<extra></extra>",
+            colorbar=dict(title="log(1 + USD)")))
+        heat.add_hline(y=mid, line_dash="dash", line_color="#e5e7eb",
+                       annotation_text="Orta fiyat", annotation_position="top right")
+        heat.update_layout(height=620, xaxis_title="Emir tarafı",
+                           yaxis_title="Fiyat ($)", margin=dict(l=20, r=20, t=20, b=20))
+        st.plotly_chart(heat, use_container_width=True)
+        c1, c2, c3 = st.columns(3)
+        c1.metric("En iyi alış ($)", f"{best_bid:,.6g}")
+        c2.metric("En iyi satış ($)", f"{best_ask:,.6g}")
+        c3.metric("Gösterilen nominal ($)", f"{inside['Nominal ($)'].sum():,.0f}")
+        st.caption(f"OKX anlık defter zamanı: {ts.strftime('%Y-%m-%d %H:%M:%S UTC')} · "
+                   f"Orta fiyat: ${mid:,.6g} · ±%{distance:g} aralık · "
+                   "Her taraftan en fazla 400 fiyat kademesi; yalnızca bu kademeler toplanır. "
+                   "Renk yoğunluğu logaritmiktir; dolar tutarı üzerine gelince görünür.")
+        band_table = pd.DataFrame({"Fiyat ($)": centers,
+                                   "Bekleyen alış ($)": buy_usd,
+                                   "Bekleyen satış ($)": sell_usd})
+        band_table["Toplam ($)"] = band_table["Bekleyen alış ($)"] + band_table["Bekleyen satış ($)"]
+        st.markdown("**En yoğun 10 fiyat dilimi**")
+        st.dataframe(band_table.nlargest(10, "Toplam ($)"),
+                     hide_index=True, use_container_width=True)
+        st.download_button("📥 Fiyat seviyelerini CSV indir",
+                           band_table.to_csv(index=False).encode("utf-8-sig"),
+                           f"okx_{base.lower()}_emir_defteri.csv", "text/csv",
+                           key="depth_download")
+        st.caption("Bu tek zamanlı bir emir defteri fotoğrafıdır; geçmişte biriken likidite haritası değildir. "
+                   "Açık pozisyon (OI) toplamı fiyat seviyelerine dağıtılamaz.")
+    except Exception as exc:
+        st.error(f"Emir defteri alınamadı: {type(exc).__name__}: {exc}")
+
+
 with market_tab:
     market_refresh = st.selectbox("🌍 Piyasa yönü yenileme", [5, 10, 15, 30, 60],
                                   index=1, format_func=lambda x: f"{x} dakika",
                                   key="market_refresh")
     st.fragment(run_every=f"{market_refresh * 60}s")(market_direction_radar)()
+    st.divider()
+    depth_refresh = st.selectbox("🔥 Isı haritası yenileme", [1, 2, 5, 10],
+                                 index=0, format_func=lambda n: f"{n} dakika",
+                                 key="depth_refresh")
+    st.fragment(run_every=f"{depth_refresh * 60}s")(orderbook_heatmap)()
 
 
 
