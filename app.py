@@ -1,4 +1,4 @@
-"""BURAK CRYPTO RADAR V5.3 — OKX + BIST USDT perpetual market research only.
+"""BURAK CRYPTO RADAR V5.4 — OKX + BIST USDT perpetual market research only.
 No orders, account access, or leverage execution.
 """
 import numpy as np
@@ -7,7 +7,7 @@ import plotly.graph_objects as go
 import requests
 import streamlit as st
 
-st.set_page_config(page_title="Burak Crypto Radar V5.3 — OKX + BIST", page_icon="📡", layout="wide")
+st.set_page_config(page_title="Burak Crypto Radar V5.4 — OKX + BIST", page_icon="📡", layout="wide")
 HEADERS = {"User-Agent": "BurakCryptoRadar/1.0", "accept": "application/json"}
 STABLE = {"usdt", "usdc", "dai", "fdusd", "tusd", "usde", "usdd", "pyusd", "frax"}
 
@@ -18,7 +18,7 @@ def get_json(url, params=None, headers=None):
     return resp.json()
 
 
-def technical(df):
+def technical(df, cfg=None):
     if len(df) < 205:
         return None
     close, high, low, vol = df.close, df.high, df.low, df.quote_volume
@@ -60,56 +60,53 @@ def technical(df):
         5 if v > 1.2 else 0, 5 if v > 1.5 else 0,
         5 if v > 2 else 0, 5 if v > 3 else 0,
     ])
-    # Independent directional conditions; fundamental growth score does not decide short.
-    bullish = (c > e20.iloc[-1] > e50.iloc[-1]
-               and macd.iloc[-1] > signal.iloc[-1]
-               and plus_di.iloc[-1] > minus_di.iloc[-1]
-               and a >= 20 and 45 <= r <= 68 and v >= 1.2)
-    bearish = (c < e20.iloc[-1] < e50.iloc[-1]
-               and macd.iloc[-1] < signal.iloc[-1]
-               and minus_di.iloc[-1] > plus_di.iloc[-1]
-               and a >= 20 and 32 <= r <= 55 and v >= 1.2)
-    direction = "🟢 LONG" if bullish else ("🔴 SHORT" if bearish else "⚪ BEKLE")
-
+    cfg = cfg or {"enabled": {k: True for k in ("EMA", "MACD", "DI", "ADX", "RSI", "Hacim")},
+                  "adx_min": 20, "long_rsi": (45, 68), "short_rsi": (32, 55),
+                  "volume_min": 1.2}
     long_tests = {"EMA": bool(c > e20.iloc[-1] > e50.iloc[-1]),
                   "MACD": bool(macd.iloc[-1] > signal.iloc[-1]),
                   "DI": bool(plus_di.iloc[-1] > minus_di.iloc[-1]),
-                  "ADX": bool(a >= 20),
-                  "RSI": bool(45 <= r <= 68),
-                  "Hacim": bool(v >= 1.2)}
+                  "ADX": bool(a >= cfg["adx_min"]),
+                  "RSI": bool(cfg["long_rsi"][0] <= r <= cfg["long_rsi"][1]),
+                  "Hacim": bool(v >= cfg["volume_min"])}
     short_tests = {"EMA": bool(c < e20.iloc[-1] < e50.iloc[-1]),
                    "MACD": bool(macd.iloc[-1] < signal.iloc[-1]),
                    "DI": bool(minus_di.iloc[-1] > plus_di.iloc[-1]),
-                   "ADX": bool(a >= 20),
-                   "RSI": bool(32 <= r <= 55),
-                   "Hacim": bool(v >= 1.2)}
-    lc, sc = sum(long_tests.values()), sum(short_tests.values())
-    if bullish:
-        stage, missing = "🟢 LONG", "—"
-    elif bearish:
-        stage, missing = "🔴 SHORT", "—"
-    elif lc == 5 and sc < 5:
+                   "ADX": bool(a >= cfg["adx_min"]),
+                   "RSI": bool(cfg["short_rsi"][0] <= r <= cfg["short_rsi"][1]),
+                   "Hacim": bool(v >= cfg["volume_min"])}
+    active = [k for k, yes in cfg["enabled"].items() if yes]
+    lc = sum(long_tests[k] for k in active)
+    sc = sum(short_tests[k] for k in active)
+    n = len(active)
+    bullish = n > 0 and lc == n
+    bearish = n > 0 and sc == n
+    direction = "🟢 LONG" if bullish and not bearish else ("🔴 SHORT" if bearish and not bullish else "⚪ BEKLE")
+    if direction != "⚪ BEKLE":
+        stage, missing = direction, "—"
+    elif n == 0:
+        stage, missing = "⚪ BEKLE", "En az bir teknik koşul seç"
+    elif lc == n - 1 and sc < n - 1:
         stage = "🟡 LONG adayı"
-        missing = ", ".join(k for k, ok in long_tests.items() if not ok)
-    elif sc == 5 and lc < 5:
+        missing = ", ".join(k for k in active if not long_tests[k])
+    elif sc == n - 1 and lc < n - 1:
         stage = "🟠 SHORT adayı"
-        missing = ", ".join(k for k, ok in short_tests.items() if not ok)
-    elif lc == 5 and sc == 5:
-        stage, missing = "⚪ Çelişkili aday", "LONG ve SHORT farklı koşullarda eksik"
+        missing = ", ".join(k for k in active if not short_tests[k])
     else:
-        stage, missing = "⚪ BEKLE", "LONG: " + ", ".join(k for k, ok in long_tests.items() if not ok) + " | SHORT: " + ", ".join(k for k, ok in short_tests.items() if not ok)
+        stage, missing = "⚪ BEKLE", ("LONG: " + ", ".join(k for k in active if not long_tests[k])
+                                     + " | SHORT: " + ", ".join(k for k in active if not short_tests[k]))
     # The live candle may change before close.
     candle_time = df["date"].iloc[-1].strftime("%Y-%m-%d %H:%M UTC")
     # 30 trend + 10 RSI + 15 MACD + 15 ADX + 20 volume = 90.
     return {"Sinyal": direction, "Fırsat durumu": stage, "Eksik koşul": missing,
-            "LONG koşul": f"{lc}/6", "SHORT koşul": f"{sc}/6", "Sinyal mumu": candle_time,
+            "LONG koşul": f"{lc}/{n}", "SHORT koşul": f"{sc}/{n}", "Sinyal mumu": candle_time,
             "Teknik skor": round(score / 90 * 100), "RSI": round(r, 1),
             "ADX": round(a, 1), "Hacim katı": round(v, 2),
             "EMA20 üstü": bool(c > e20.iloc[-1]), "EMA50 üstü": bool(c > e50.iloc[-1]),
-            "EMA200 üstü": bool(c > e200.iloc[-1]), "Kapanış": c}
+            "EMA200 üstü": bool(c > e200.iloc[-1]), "Kapanış": c, "_long_tests": long_tests, "_short_tests": short_tests}
 
 
-def fibonacci_check(df, price, side):
+def fibonacci_check(df, price, side, atr_limit=1.0):
     closed = df[df["confirm"] == "1"].tail(100)
     if len(closed) < 30:
         return False, float("nan"), float("nan")
@@ -126,7 +123,7 @@ def fibonacci_check(df, price, side):
         return False, float("nan"), float("nan")
     level = max(eligible) if side == "LONG" else min(eligible)
     distance = abs(price-level)/atr
-    return distance <= 1, level, distance
+    return distance <= atr_limit, level, distance
 
 
 def levels_and_risks(df, row):
@@ -317,9 +314,34 @@ def okx_derivatives(inst_id):
 
 
 
-st.title("📡 BURAK CRYPTO RADAR V5.3 — OKX + BIST")
+st.title("📡 BURAK CRYPTO RADAR V5.4 — OKX + BIST")
 st.caption("Yalnızca OKX USDT perpetual verileri • LONG / SHORT araştırma sinyalleri • Otomatik emir göndermez")
 with st.sidebar:
+    st.header("🎛️ Radar koşulları")
+    st.caption("Bu ayarlar OKX LONG/SHORT radarı ve manuel coin analizine uygulanır. Diğer sekmelerin hesaplamaları bağımsızdır.")
+    with st.expander("🟢🔴 Teknik teyitler", expanded=True):
+        enabled = {name: st.checkbox(name, value=True, key="condition_" + name)
+                   for name in ("EMA", "MACD", "DI", "ADX", "RSI", "Hacim")}
+        st.caption("İşaretini kaldırdığın koşul sinyal hesabından çıkarılır; gösterge tabloda görünmeye devam eder.")
+    with st.expander("📐 Fibonacci teyitleri", expanded=True):
+        fib_1h = st.checkbox("1 saatlik Fibonacci", value=True, key="condition_fib_1h")
+        fib_4h = st.checkbox("4 saatlik Fibonacci", value=True, key="condition_fib_4h")
+        fib_atr = st.slider("Fib yakınlığı (ATR)", 0.25, 3.0, 1.0, 0.25, key="condition_fib_atr")
+    with st.expander("📊 Sinyal eşikleri", expanded=False):
+        adx_min = st.slider("Minimum ADX", 10, 45, 20, key="condition_adx_min")
+        long_rsi = st.slider("LONG RSI aralığı", 0, 100, (45, 68), key="condition_long_rsi")
+        short_rsi = st.slider("SHORT RSI aralığı", 0, 100, (32, 55), key="condition_short_rsi")
+        volume_min = st.slider("Minimum hacim katı", 0.5, 5.0, 1.2, 0.1, key="condition_volume_min")
+    condition_cfg = {"enabled": enabled, "fib": {"1h": fib_1h, "4h": fib_4h},
+                     "fib_atr": fib_atr, "adx_min": adx_min,
+                     "long_rsi": long_rsi, "short_rsi": short_rsi,
+                     "volume_min": volume_min}
+    if st.button("↩️ Varsayılan koşullara dön", use_container_width=True):
+        for key in list(st.session_state):
+            if key.startswith("condition_"):
+                del st.session_state[key]
+        st.rerun()
+    st.divider()
     st.header("OKX veri ayarları")
     st.caption("Radarlar kendi seçtiğin aralıklarla yenilenir. Ticker ve mum önbelleği 15 sn, fonlama/OI 60 sn.")
     if st.button("🔄 OKX verilerini yenile"):
@@ -328,7 +350,7 @@ with st.sidebar:
 
 radar_tab, whale_tab, market_tab, bist_tab, futures, methodology = st.tabs(["🟢🔴 OKX Perpetual Radar", "🐋 OKX Balina / Akıllı Para", "🌍 OKX Piyasa Yönü", "🇹🇷 BIST Radar", "⚠️ Vadeli risk ekranı", "ℹ️ Metodoloji"])
 
-def analyze_okx_coin(item, okx_interval, stop_mult, target_mult):
+def analyze_okx_coin(item, okx_interval, stop_mult, target_mult, cfg):
     inst = item["Parite"]
     frame = okx_candles(inst, okx_interval)
     if frame.iloc[-1]["confirm"] != "0":
@@ -342,48 +364,57 @@ def analyze_okx_coin(item, okx_interval, stop_mult, target_mult):
     elapsed = (item["Ticker UTC"] - frame.iloc[-1]["date"]).total_seconds()
     fraction = min(1., max(.1, elapsed / seconds))
     frame.loc[frame.index[-1], "quote_volume"] /= fraction
-    indicators = technical(frame)
+    indicators = technical(frame, cfg)
     if indicators is None:
         raise ValueError(f"{inst} için teknik analiz hesaplanamadı: {len(frame)} mum var; en az 205 geçerli mum ve hesaplanabilir RSI/ADX/hacim gerekli. Yeni listelenen coinlerde sinyal üretilemez.")
+    long_tests = indicators.pop("_long_tests")
+    short_tests = indicators.pop("_short_tests")
+    active = [k for k, yes in cfg["enabled"].items() if yes]
     fib = {}
     for tf in ("1h", "4h"):
-        fib_frame = frame if tf == okx_interval else okx_candles(inst, tf)
-        if fib_frame.iloc[-1]["confirm"] != "0":
-            raise ValueError("Fibonacci için açık mum yok")
-        for side in ("LONG", "SHORT"):
-            fib[(tf, side)] = fibonacci_check(fib_frame, live_price, side)
-    old_signal = indicators["Sinyal"]
-    long_n = int(indicators["LONG koşul"].split("/")[0])
-    short_n = int(indicators["SHORT koşul"].split("/")[0])
-    long_n += int(fib[("1h", "LONG")][0]) + int(fib[("4h", "LONG")][0])
-    short_n += int(fib[("1h", "SHORT")][0]) + int(fib[("4h", "SHORT")][0])
-    indicators["LONG koşul"] = f"{long_n}/8"
-    indicators["SHORT koşul"] = f"{short_n}/8"
+        if cfg["fib"][tf]:
+            fib_frame = frame if tf == okx_interval else okx_candles(inst, tf)
+            if fib_frame.iloc[-1]["confirm"] != "0":
+                raise ValueError("Fibonacci için açık mum yok")
+            for side in ("LONG", "SHORT"):
+                fib[(tf, side)] = fibonacci_check(fib_frame, live_price, side, cfg["fib_atr"])
+        else:
+            for side in ("LONG", "SHORT"):
+                fib[(tf, side)] = (False, np.nan, np.nan)
+    fib_active = [tf for tf in ("1h", "4h") if cfg["fib"][tf]]
+    total = len(active) + len(fib_active)
+    long_n = sum(long_tests[k] for k in active) + sum(fib[(tf, "LONG")][0] for tf in fib_active)
+    short_n = sum(short_tests[k] for k in active) + sum(fib[(tf, "SHORT")][0] for tf in fib_active)
+    indicators["LONG koşul"] = f"{long_n}/{total}"
+    indicators["SHORT koşul"] = f"{short_n}/{total}"
     for tf in ("1h", "4h"):
         for side in ("LONG", "SHORT"):
             passed, level, distance = fib[(tf, side)]
-            indicators[f"Fib {tf} {side}"] = passed
+            indicators[f"Fib {tf} {side}"] = passed if cfg["fib"][tf] else None
             indicators[f"Fib {tf} {side} seviye ($)"] = level
             indicators[f"Fib {tf} {side} uzaklık ATR"] = round(distance, 2) if np.isfinite(distance) else np.nan
-    missing_long = [f"Fib {tf}" for tf in ("1h", "4h") if not fib[(tf, "LONG")][0]]
-    missing_short = [f"Fib {tf}" for tf in ("1h", "4h") if not fib[(tf, "SHORT")][0]]
-    old_missing = indicators["Eksik koşul"]
-    if old_signal == "🟢 LONG" and long_n == 8:
-        indicators["Fırsat durumu"] = "🟢 LONG"
-        indicators["Eksik koşul"] = "—"
-    elif old_signal == "🔴 SHORT" and short_n == 8:
-        indicators["Fırsat durumu"] = "🔴 SHORT"
-        indicators["Eksik koşul"] = "—"
-    elif long_n == 7 and short_n < 7:
-        indicators["Fırsat durumu"] = "🟡 LONG adayı"
-        indicators["Eksik koşul"] = ", ".join(missing_long) if missing_long else old_missing
-    elif short_n == 7 and long_n < 7:
-        indicators["Fırsat durumu"] = "🟠 SHORT adayı"
-        indicators["Eksik koşul"] = ", ".join(missing_short) if missing_short else old_missing
+    long_missing = [k for k in active if not long_tests[k]] + [
+        f"Fib {tf}" for tf in fib_active if not fib[(tf, "LONG")][0]]
+    short_missing = [k for k in active if not short_tests[k]] + [
+        f"Fib {tf}" for tf in fib_active if not fib[(tf, "SHORT")][0]]
+    if total == 0:
+        stage, missing = "⚪ BEKLE", "Sol menüden en az bir koşul seç"
+    elif long_n == total and short_n == total:
+        stage, missing = "⚪ Çelişkili aday", "LONG ve SHORT aynı anda tüm seçili koşulları sağlıyor"
+    elif long_n == total:
+        stage, missing = "🟢 LONG", "—"
+    elif short_n == total:
+        stage, missing = "🔴 SHORT", "—"
+    elif total >= 2 and long_n == total - 1 and short_n < total - 1:
+        stage, missing = "🟡 LONG adayı", ", ".join(long_missing)
+    elif total >= 2 and short_n == total - 1 and long_n < total - 1:
+        stage, missing = "🟠 SHORT adayı", ", ".join(short_missing)
     else:
-        indicators["Fırsat durumu"] = "⚪ BEKLE"
-        indicators["Eksik koşul"] = "LONG Fib: " + (", ".join(missing_long) or "OK") + " | SHORT Fib: " + (", ".join(missing_short) or "OK") + " | Teknik: " + old_missing
-    indicators["Sinyal"] = indicators["Fırsat durumu"] if indicators["Fırsat durumu"] in ("🟢 LONG", "🔴 SHORT") else "⚪ BEKLE"
+        stage = "⚪ BEKLE"
+        missing = "LONG: " + (", ".join(long_missing) or "OK") + " | SHORT: " + (", ".join(short_missing) or "OK")
+    indicators["Fırsat durumu"] = stage
+    indicators["Eksik koşul"] = missing
+    indicators["Sinyal"] = stage if stage in ("🟢 LONG", "🔴 SHORT") else "⚪ BEKLE"
     try:
         derivative = okx_derivatives(inst)
     except Exception:
@@ -396,7 +427,7 @@ def analyze_okx_coin(item, okx_interval, stop_mult, target_mult):
 
 def live_radar():
         st.subheader("OKX USDT Perpetual — LONG / SHORT Radar")
-        st.caption("OKX canlı ticker ve açık perpetual mumundan geçici LONG/SHORT adayları. RSI14: LONG 45–68, SHORT 32–55. Hesap bağlanmaz, emir gönderilmez.")
+        st.caption(f"OKX canlı ticker ve açık perpetual mumundan geçici LONG/SHORT adayları. Sol menüdeki seçili koşullar uygulanır. RSI14: LONG {condition_cfg[\"long_rsi\"][0]}–{condition_cfg[\"long_rsi\"][1]}, SHORT {condition_cfg[\"short_rsi\"][0]}–{condition_cfg[\"short_rsi\"][1]}. Hesap bağlanmaz, emir gönderilmez.")
         p1, p2, p3 = st.columns(3)
         with p1:
             okx_interval = st.selectbox("Perpetual zaman dilimi", ["1h", "4h", "1d"], key="okx_interval")
@@ -421,7 +452,7 @@ def live_radar():
             with st.spinner("OKX perpetual mumları ve vadeli göstergeleri alınıyor..."):
                 for _, item in universe.head(okx_limit).iterrows():
                     try:
-                        okx_rows.append(analyze_okx_coin(item, okx_interval, stop_mult, target_mult))
+                        okx_rows.append(analyze_okx_coin(item, okx_interval, stop_mult, target_mult, condition_cfg))
                     except Exception:
                         okx_fail += 1
             if okx_fail:
@@ -455,7 +486,7 @@ def live_radar():
                     return [bg] * len(row)
                 st.dataframe(radar[show].style.apply(okx_signal_color, axis=1),
                              hide_index=True, use_container_width=True)
-                st.caption("Funding % mevcut fonlama oranıdır; tek başına LONG/SHORT koşuluna katılmaz. OI ($) mevcut açık pozisyon anlık görüntüsüdür; OI değişimi değildir. OKX hacmi yaklaşık USD cinsindedir.")
+                st.caption("Koşullar sol menüden seçilir; devre dışı bırakılan Fibonacci hücreleri boş görünür. Funding % mevcut fonlama oranıdır; tek başına LONG/SHORT koşuluna katılmaz. OI ($) mevcut açık pozisyon anlık görüntüsüdür; OI değişimi değildir. OKX hacmi yaklaşık USD cinsindedir.")
                 st.download_button("📥 OKX perpetual radar CSV",
                                    radar.to_csv(index=False).encode("utf-8-sig"),
                                    "burak_okx_perpetual_radar.csv", "text/csv")
@@ -465,7 +496,7 @@ def live_radar():
 
         st.divider()
         st.subheader("🔎 Kendi coinini analiz et")
-        st.caption("Ana tarama listesinden bağımsızdır. OKX USDT perpetual paritesini gir; aynı teknik + 1h/4h Fibonacci 8 koşuluyla değerlendirilir. Ana taramanın hacim ve ilk-N sınırına tabi değildir.")
+        st.caption("Ana tarama listesinden bağımsızdır. OKX USDT perpetual paritesini gir; sol menüde seçtiğin teknik ve Fibonacci koşullarıyla değerlendirilir. Ana taramanın hacim ve ilk-N sınırına tabi değildir.")
         custom_text = st.text_input("Coin sembolü", placeholder="Örn. ETH, SOL veya ETH-USDT-SWAP", key="custom_coin")
         if custom_text.strip():
             raw = custom_text.strip().upper().replace("/", "-").replace(" ", "")
@@ -478,7 +509,7 @@ def live_radar():
                     st.warning(f"{inst_id} OKX USDT perpetual listesinde bulunamadı. Coin sembolünü kontrol et.")
                 else:
                     with st.spinner(f"{inst_id} canlı verileri ve Fibonacci teyitleri hesaplanıyor..."):
-                        custom = analyze_okx_coin(matched.iloc[0], okx_interval, stop_mult, target_mult)
+                        custom = analyze_okx_coin(matched.iloc[0], okx_interval, stop_mult, target_mult, condition_cfg)
                     st.metric("Fırsat durumu", custom["Fırsat durumu"])
                     c1, c2, c3 = st.columns(3)
                     c1.metric("Canlı fiyat ($)", f'{custom["Fiyat ($)"]:,.6g}')
