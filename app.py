@@ -1,4 +1,4 @@
-"""BURAK CRYPTO RADAR V5.7 — OKX + BIST USDT perpetual market research only.
+"""BURAK CRYPTO RADAR V5.8 — OKX + BIST USDT perpetual market research only.
 No orders, account access, or leverage execution.
 """
 import numpy as np
@@ -7,7 +7,7 @@ import plotly.graph_objects as go
 import requests
 import streamlit as st
 
-st.set_page_config(page_title="Burak Crypto Radar V5.7 — OKX + BIST", page_icon="📡", layout="wide")
+st.set_page_config(page_title="Burak Crypto Radar V5.8 — OKX + BIST", page_icon="📡", layout="wide")
 HEADERS = {"User-Agent": "BurakCryptoRadar/1.0", "accept": "application/json"}
 STABLE = {"usdt", "usdc", "dai", "fdusd", "tusd", "usde", "usdd", "pyusd", "frax"}
 
@@ -249,6 +249,183 @@ def backtest_directional(df, hold_bars=4, fee_pct=.1, slip_pct=.05):
 
 
 
+
+def nkral_signals(df, sensitivity=1.0, atr_period=10):
+    """NKRAL1 original close/ATR trailing stop crossover, evaluated on supplied bars."""
+    c = df["close"].astype(float)
+    h = df["high"].astype(float)
+    l = df["low"].astype(float)
+    prev = c.shift(1)
+    tr = pd.concat([h-l, (h-prev).abs(), (l-prev).abs()], axis=1).max(axis=1)
+    # Pine ta.atr: Wilder RMA seeded with first ATR-length SMA.
+    atr = pd.Series(np.nan, index=df.index, dtype=float)
+    if len(df) >= atr_period:
+        atr.iloc[atr_period-1] = tr.iloc[:atr_period].mean()
+        for i in range(atr_period, len(df)):
+            atr.iloc[i] = (atr.iloc[i-1] * (atr_period-1) + tr.iloc[i]) / atr_period
+    stops = np.full(len(df), np.nan)
+    buy = np.zeros(len(df), dtype=bool)
+    sell = np.zeros(len(df), dtype=bool)
+    for i in range(len(df)):
+        if not np.isfinite(atr.iloc[i]):
+            continue
+        old = stops[i-1] if i > 0 and np.isfinite(stops[i-1]) else 0.
+        price = float(c.iloc[i])
+        previous_price = float(c.iloc[i-1]) if i else np.nan
+        loss = sensitivity * float(atr.iloc[i])
+        if price > old and previous_price > old:
+            stop = max(old, price-loss)
+        elif price < old and previous_price < old:
+            stop = min(old, price+loss)
+        else:
+            stop = price-loss if price > old else price+loss
+        stops[i] = stop
+        if i > 0 and np.isfinite(stops[i-1]):
+            buy[i] = price > stop and previous_price <= old and price > stop
+            sell[i] = price < stop and previous_price >= old and price < stop
+    return pd.DataFrame({"NK AL": buy, "NK SAT": sell,
+                         "NK stop ($)": stops}, index=df.index)
+
+
+def strategy_states(df, cfg, sensitivity=1., atr_period=10):
+    """Closed-bar historical comparison. Same-timeframe technical filters;
+    Fibonacci cross-timeframe confirmation is excluded and explicitly disclosed."""
+    c, h, l, vol = df.close, df.high, df.low, df.quote_volume
+    e20 = c.ewm(span=20, adjust=False).mean()
+    e50 = c.ewm(span=50, adjust=False).mean()
+    delta = c.diff()
+    gain = delta.clip(lower=0).ewm(alpha=1/14, adjust=False).mean()
+    loss = (-delta.clip(upper=0)).ewm(alpha=1/14, adjust=False).mean()
+    rsi = 100 - 100 / (1 + gain / loss.replace(0, np.nan))
+    macd = c.ewm(span=12, adjust=False).mean() - c.ewm(span=26, adjust=False).mean()
+    sig = macd.ewm(span=9, adjust=False).mean()
+    up, down = h.diff(), -l.diff()
+    pdm = up.where((up > down) & (up > 0), 0.)
+    mdm = down.where((down > up) & (down > 0), 0.)
+    tr = pd.concat([h-l, (h-c.shift()).abs(), (l-c.shift()).abs()], axis=1).max(axis=1)
+    atr = tr.ewm(alpha=1/14, adjust=False).mean().replace(0, np.nan)
+    pdi = 100 * pdm.ewm(alpha=1/14, adjust=False).mean() / atr
+    mdi = 100 * mdm.ewm(alpha=1/14, adjust=False).mean() / atr
+    dx = 100 * (pdi-mdi).abs() / (pdi+mdi).replace(0, np.nan)
+    adx = dx.ewm(alpha=1/14, adjust=False).mean()
+    vr = vol / vol.shift(1).rolling(20).mean().replace(0, np.nan)
+    long_checks = {"EMA": (c > e20) & (e20 > e50),
+                   "MACD": macd > sig, "DI": pdi > mdi,
+                   "ADX": adx >= cfg["adx_min"],
+                   "RSI": rsi.between(*cfg["long_rsi"]),
+                   "Hacim": vr >= cfg["volume_min"]}
+    short_checks = {"EMA": (c < e20) & (e20 < e50),
+                    "MACD": macd < sig, "DI": mdi > pdi,
+                    "ADX": adx >= cfg["adx_min"],
+                    "RSI": rsi.between(*cfg["short_rsi"]),
+                    "Hacim": vr >= cfg["volume_min"]}
+    active = [k for k, enabled in cfg["enabled"].items() if enabled]
+    long_ok = pd.Series(False, index=df.index)
+    short_ok = pd.Series(False, index=df.index)
+    if active:
+        long_ok = pd.concat([long_checks[k] for k in active], axis=1).all(axis=1)
+        short_ok = pd.concat([short_checks[k] for k in active], axis=1).all(axis=1)
+    nk = nkral_signals(df, sensitivity, atr_period)
+    radar = np.where(long_ok & ~short_ok, 1, np.where(short_ok & ~long_ok, -1, 0))
+    nk_state = np.where(nk["NK AL"], 1, np.where(nk["NK SAT"], -1, 0))
+    # Hybrid requires NKRAL crossing AND radar technical alignment on the same closed bar.
+    hybrid = np.where((nk_state == 1) & (radar == 1), 1,
+                      np.where((nk_state == -1) & (radar == -1), -1, 0))
+    return {"Mevcut Radar (teknik)": radar, "NKRAL1": nk_state,
+            "Hibrit": hybrid}, nk
+
+
+def strategy_trade_test(df, state, hold_bars, fee_pct, slip_pct):
+    """Next-bar-open entry; fixed holding-period close exit; no overlapping positions."""
+    trades = []
+    i = 205
+    while i + hold_bars < len(df):
+        direction = int(state[i])
+        if direction == 0 or (i > 0 and int(state[i-1]) == direction):
+            i += 1
+            continue
+        entry_i, exit_i = i + 1, i + hold_bars
+        entry, exit_price = float(df.open.iloc[entry_i]), float(df.close.iloc[exit_i])
+        if entry <= 0 or not np.isfinite(entry) or not np.isfinite(exit_price):
+            i += 1
+            continue
+        gross = direction * (exit_price / entry - 1) * 100
+        net = gross - 2 * (fee_pct + slip_pct)
+        trades.append({"Sinyal UTC": df.date.iloc[i], "Yön": "LONG" if direction == 1 else "SHORT",
+                       "Giriş UTC": df.date.iloc[entry_i], "Çıkış UTC": df.date.iloc[exit_i],
+                       "Giriş ($)": entry, "Çıkış ($)": exit_price,
+                       "Brüt %": gross, "Net %": net})
+        i = exit_i + 1
+    return pd.DataFrame(trades)
+
+
+def compare_strategies_ui(cfg):
+    st.subheader("🧪 Mevcut Radar / NKRAL1 / Hibrit — Geçmiş Veri Karşılaştırması")
+    st.caption("1H ve 4H ayrı test edilir. Yalnızca OKX'ten alınan son 300 mumun kapanmış olanları kullanılır; "
+               "205 mum ısınma sonrasında kalan kısa örnek test edilir. Fibonacci 1H/4H teyitleri bu "
+               "karşılaştırmaya DAHİL DEĞİLDİR; 'Mevcut Radar' burada yalnızca seçili teknik koşullardır.")
+    t1, t2, t3 = st.columns(3)
+    with t1:
+        coin = st.text_input("Test coin", "BTC", key="comparison_coin").strip().upper()
+    with t2:
+        hold = st.slider("Pozisyon süresi (mum)", 1, 12, 4, key="comparison_hold")
+    with t3:
+        fee = st.number_input("Tek yön komisyon (%)", 0., 1., .05, .01, key="comparison_fee")
+    t4, t5 = st.columns(2)
+    with t4:
+        slip = st.number_input("Tek yön kayma (%)", 0., 1., .05, .01, key="comparison_slip")
+    with t5:
+        nk_sensitivity = st.number_input("NKRAL hassasiyet", .1, 10., 1., .1, key="comparison_nk_sens")
+        nk_period = st.number_input("NKRAL ATR periyodu", 1, 100, 10, key="comparison_nk_atr")
+    if not st.button("▶️ 1H ve 4H karşılaştırmasını çalıştır", key="comparison_run"):
+        return
+    base = coin.removesuffix("-USDT-SWAP").removesuffix("-USDT")
+    if not base or not base.replace("-", "").isalnum():
+        st.error("Geçerli coin sembolü gir.")
+        return
+    rows, details = [], []
+    for tf in ("1h", "4h"):
+        try:
+            frame = okx_candles(base + "-USDT-SWAP", tf)
+            frame = frame[frame["confirm"] == "1"].reset_index(drop=True)
+            if len(frame) < 215:
+                st.warning(f"{tf}: Yeterli kapanmış mum yok ({len(frame)}).")
+                continue
+            states, nk = strategy_states(frame, cfg, nk_sensitivity, int(nk_period))
+            for name, state in states.items():
+                trades = strategy_trade_test(frame, state, hold, fee, slip)
+                n = len(trades)
+                wins = int((trades["Net %"] > 0).sum()) if n else 0
+                profits = trades["Net %"].clip(lower=0).sum() if n else 0.
+                losses = -trades["Net %"].clip(upper=0).sum() if n else 0.
+                curve = (1 + trades["Net %"] / 100).cumprod() if n else pd.Series(dtype=float)
+                dd = ((curve / curve.cummax()) - 1).min() * 100 if n else np.nan
+                rows.append({"Zaman": tf, "Strateji": name, "İşlem": n,
+                             "Kazanma %": round(100*wins/n, 2) if n else np.nan,
+                             "Ort. net %": round(trades["Net %"].mean(), 3) if n else np.nan,
+                             "Profit factor": round(profits/losses, 2) if losses > 0 else np.nan,
+                             "Bileşik net %": round((curve.iloc[-1]-1)*100, 2) if n else np.nan,
+                             "Maks. düşüş %": round(dd, 2) if n else np.nan,
+                             "İlk mum UTC": frame.date.iloc[205],
+                             "Son mum UTC": frame.date.iloc[-1]})
+                if n:
+                    trades.insert(0, "Zaman", tf)
+                    trades.insert(1, "Strateji", name)
+                    details.append(trades)
+        except Exception as exc:
+            st.warning(f"{tf} test edilemedi: {type(exc).__name__}: {exc}")
+    if rows:
+        st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
+        st.warning("Bu bir sınırlı örneklem araştırmasıdır; işlem sayısı düşükse oranlar güvenilir değildir. "
+                   "Fonlama, likidasyon, spread değişimi, stop/hedef ve gerçek emir gerçekleşmesi modellenmez. "
+                   "NKRAL1 varsayılan normal mum kapanışı kullanılır; Heikin Ashi seçeneği uygulanmaz. "
+                   "Aynı anda tek pozisyon, sonraki mum açılışında giriş ve seçilen mum sonunda çıkış varsayılır.")
+        if details:
+            st.download_button("📥 Karşılaştırma işlemlerini CSV indir",
+                               pd.concat(details, ignore_index=True).to_csv(index=False).encode("utf-8-sig"),
+                               "burak_strateji_karsilastirma.csv", "text/csv",
+                               key="comparison_export")
+
 @st.cache_data(ttl=15, show_spinner=False)
 def okx_public(path, params=None):
     payload = get_json("https://www.okx.com" + path, params)
@@ -314,10 +491,16 @@ def okx_derivatives(inst_id):
 
 
 
-st.title("📡 BURAK CRYPTO RADAR V5.7 — OKX + BIST")
+st.title("📡 BURAK CRYPTO RADAR V5.8 — OKX + BIST")
 st.caption("Yalnızca OKX USDT perpetual verileri • LONG / SHORT araştırma sinyalleri • Otomatik emir göndermez")
 with st.sidebar:
     st.header("🎛️ Radar koşulları")
+    strategy_mode = st.selectbox("🧭 Strateji seçimi",
+                                 ["Mevcut Radar", "NKRAL1", "Hibrit"],
+                                 key="strategy_mode")
+    nk_sens = st.number_input("NKRAL ATR hassasiyeti", .1, 10., 1., .1, key="nk_sens")
+    nk_atr = st.number_input("NKRAL ATR periyodu", 1, 100, 10, key="nk_atr")
+    st.caption("NKRAL1: ATR trailing stop kesişimi. Hibrit: NKRAL1 kesişimi ve mevcut radar aynı yönde.")
     st.caption("Bu ayarlar OKX LONG/SHORT radarı ve manuel coin analizine uygulanır. Diğer sekmelerin hesaplamaları bağımsızdır.")
     with st.expander("🟢🔴 Teknik teyitler", expanded=True):
         enabled = {name: st.checkbox(name, value=True, key="condition_" + name)
@@ -332,7 +515,7 @@ with st.sidebar:
         long_rsi = st.slider("LONG RSI aralığı", 0, 100, (45, 68), key="condition_long_rsi")
         short_rsi = st.slider("SHORT RSI aralığı", 0, 100, (32, 55), key="condition_short_rsi")
         volume_min = st.slider("Minimum hacim katı", 0.5, 5.0, 1.2, 0.1, key="condition_volume_min")
-    condition_cfg = {"enabled": enabled, "fib": {"1h": fib_1h, "4h": fib_4h},
+    condition_cfg = {"strategy": strategy_mode, "nk_sens": nk_sens, "nk_atr": nk_atr, "enabled": enabled, "fib": {"1h": fib_1h, "4h": fib_4h},
                      "fib_atr": fib_atr, "adx_min": adx_min,
                      "long_rsi": long_rsi, "short_rsi": short_rsi,
                      "volume_min": volume_min}
@@ -367,6 +550,13 @@ def analyze_okx_coin(item, okx_interval, stop_mult, target_mult, cfg):
     indicators = technical(frame, cfg)
     if indicators is None:
         raise ValueError(f"{inst} için teknik analiz hesaplanamadı: {len(frame)} mum var; en az 205 geçerli mum ve hesaplanabilir RSI/ADX/hacim gerekli. Yeni listelenen coinlerde sinyal üretilemez.")
+    nk_frame = frame[frame["confirm"] == "1"].reset_index(drop=True)
+    nk = nkral_signals(nk_frame, cfg["nk_sens"], cfg["nk_atr"])
+    nk_long = bool(nk["NK AL"].iloc[-1]) if len(nk) else False
+    nk_short = bool(nk["NK SAT"].iloc[-1]) if len(nk) else False
+    indicators["NKRAL AL (son kapanış)"] = nk_long
+    indicators["NKRAL SAT (son kapanış)"] = nk_short
+    indicators["NKRAL stop ($)"] = float(nk["NK stop ($)"].iloc[-1]) if len(nk) else np.nan
     long_tests = indicators.pop("_long_tests")
     short_tests = indicators.pop("_short_tests")
     active = [k for k, yes in cfg["enabled"].items() if yes]
@@ -412,6 +602,22 @@ def analyze_okx_coin(item, okx_interval, stop_mult, target_mult, cfg):
     else:
         stage = "⚪ BEKLE"
         missing = "LONG: " + (", ".join(long_missing) or "OK") + " | SHORT: " + (", ".join(short_missing) or "OK")
+    if cfg["strategy"] == "NKRAL1":
+        stage = "🟢 LONG" if nk_long and not nk_short else ("🔴 SHORT" if nk_short and not nk_long else "⚪ BEKLE")
+        missing = "NKRAL1 son kapanmış mumda AL/SAT kesişimi yok" if stage == "⚪ BEKLE" else "—"
+        indicators["LONG koşul"] = f"{int(nk_long)}/1"
+        indicators["SHORT koşul"] = f"{int(nk_short)}/1"
+    elif cfg["strategy"] == "Hibrit":
+        radar_long, radar_short = stage == "🟢 LONG", stage == "🔴 SHORT"
+        if radar_long and nk_long:
+            stage, missing = "🟢 LONG", "—"
+        elif radar_short and nk_short:
+            stage, missing = "🔴 SHORT", "—"
+        else:
+            stage, missing = "⚪ BEKLE", "Radar teyidi ve NKRAL1 son kapanış kesişimi birlikte gerekli"
+        indicators["LONG koşul"] += f" + NK {int(nk_long)}/1"
+        indicators["SHORT koşul"] += f" + NK {int(nk_short)}/1"
+    indicators["Strateji"] = cfg["strategy"]
     indicators["Fırsat durumu"] = stage
     indicators["Eksik koşul"] = missing
     indicators["Sinyal"] = stage if stage in ("🟢 LONG", "🔴 SHORT") else "⚪ BEKLE"
@@ -426,7 +632,7 @@ def analyze_okx_coin(item, okx_interval, stop_mult, target_mult, cfg):
 
 
 def live_radar():
-        st.subheader("OKX USDT Perpetual — LONG / SHORT Radar")
+        st.subheader(f"OKX USDT Perpetual — LONG / SHORT Radar · {strategy_mode}")
         st.caption(f"OKX canlı ticker ve açık perpetual mumundan geçici LONG/SHORT adayları. Sol menüdeki seçili koşullar uygulanır. RSI14: LONG {condition_cfg['long_rsi'][0]}–{condition_cfg['long_rsi'][1]}, SHORT {condition_cfg['short_rsi'][0]}–{condition_cfg['short_rsi'][1]}. Hesap bağlanmaz, emir gönderilmez.")
         p1, p2, p3 = st.columns(3)
         with p1:
@@ -470,7 +676,7 @@ def live_radar():
                 r1.metric("🟢 LONG", int(counts.get("🟢 LONG", 0)))
                 r2.metric("🔴 SHORT", int(counts.get("🔴 SHORT", 0)))
                 r3.metric("🟡🟠 Yaklaşan aday", int(radar["Fırsat durumu"].isin(["🟡 LONG adayı", "🟠 SHORT adayı"]).sum()))
-                show = ["Parite", "Fırsat durumu", "LONG koşul", "SHORT koşul", "Eksik koşul", "Fib 1h LONG", "Fib 4h LONG", "Fib 1h SHORT", "Fib 4h SHORT", "Sinyal", "Ticker UTC", "Sinyal mumu", "Fiyat ($)",
+                show = ["Parite", "Strateji", "NKRAL AL (son kapanış)", "NKRAL SAT (son kapanış)", "NKRAL stop ($)", "Fırsat durumu", "LONG koşul", "SHORT koşul", "Eksik koşul", "Fib 1h LONG", "Fib 4h LONG", "Fib 1h SHORT", "Fib 4h SHORT", "Sinyal", "Ticker UTC", "Sinyal mumu", "Fiyat ($)",
                         "Referans giriş ($)", "Stop ($)", "Hedef ($)",
                         "Stop uzaklık %", "Hedef uzaklık %", "Risk/Ödül",
                         "24s hacim yaklaşık ($)", "RSI", "ADX", "Hacim katı",
@@ -516,7 +722,7 @@ def live_radar():
                     c2.metric("LONG koşul", custom["LONG koşul"])
                     c3.metric("SHORT koşul", custom["SHORT koşul"])
                     st.write("**Eksik koşul:**", custom["Eksik koşul"])
-                    fields = ["Parite", "Ticker UTC", "Sinyal mumu", "Fırsat durumu", "Eksik koşul",
+                    fields = ["Parite", "Strateji", "NKRAL AL (son kapanış)", "NKRAL SAT (son kapanış)", "NKRAL stop ($)", "Ticker UTC", "Sinyal mumu", "Fırsat durumu", "Eksik koşul",
                               "Fib 1h LONG", "Fib 4h LONG", "Fib 1h SHORT", "Fib 4h SHORT",
                               "Fib 1h LONG seviye ($)", "Fib 4h LONG seviye ($)",
                               "Fib 1h SHORT seviye ($)", "Fib 4h SHORT seviye ($)",
@@ -540,6 +746,8 @@ with radar_tab:
     )
     st.caption(f"Otomatik yenileme: {refresh_minutes} dakikada bir. Sayfa açık kaldığı sürece çalışır.")
     st.fragment(run_every=f"{refresh_minutes * 60}s")(live_radar)()
+    st.divider()
+    compare_strategies_ui(condition_cfg)
 
 
 
