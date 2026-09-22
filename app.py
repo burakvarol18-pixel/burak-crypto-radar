@@ -1012,7 +1012,8 @@ def orderbook_heatmap():
                            band_table.to_csv(index=False).encode("utf-8-sig"),
                            f"okx_{base.lower()}_emir_defteri.csv", "text/csv",
                            key="depth_download")
-        st.caption("Tüm fiyat aralıkları yalnızca OKX tarafından döndürülen defter kademelerini kapsar. Bu tek zamanlı bir emir defteri fotoğrafıdır; geçmişte biriken likidite haritası değildir. 
+        st.caption("Tüm fiyat aralıkları yalnızca OKX tarafından döndürülen defter kademelerini kapsar. "
+                   "Bu tek zamanlı bir emir defteri fotoğrafıdır; geçmişte biriken likidite haritası değildir. "
                    "Açık pozisyon (OI) toplamı fiyat seviyelerine dağıtılamaz.")
     except Exception as exc:
         st.error(f"Emir defteri alınamadı: {type(exc).__name__}: {exc}")
