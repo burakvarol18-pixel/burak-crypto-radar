@@ -1,4 +1,4 @@
-"""BURAK CRYPTO RADAR V5.8 — OKX + BIST USDT perpetual market research only.
+"""BURAK CRYPTO RADAR V5.9 — OKX + BIST USDT perpetual market research only.
 No orders, account access, or leverage execution.
 """
 import numpy as np
@@ -7,7 +7,22 @@ import plotly.graph_objects as go
 import requests
 import streamlit as st
 
-st.set_page_config(page_title="Burak Crypto Radar V5.8 — OKX + BIST", page_icon="📡", layout="wide")
+st.set_page_config(page_title="Burak Crypto Radar V5.9 — OKX + BIST", page_icon="📡", layout="wide")
+st.markdown("""
+<style>
+@media (max-width: 600px) {
+  .block-container {padding: 0.75rem 0.65rem 4rem; max-width: 100%;}
+  h1 {font-size: 1.65rem !important; line-height: 1.2;}
+  h2 {font-size: 1.35rem !important;}
+  div[data-testid="stMetric"] {padding: 0.65rem; border: 1px solid rgba(128,128,128,.25); border-radius: 12px;}
+  div[data-testid="stMetricValue"] {font-size: 1.25rem;}
+  div[data-testid="stHorizontalBlock"] {gap: .4rem;}
+  div[data-testid="stTabs"] button {white-space: nowrap;}
+  div[data-testid="stDataFrame"] {max-width: 100%;}
+  button[kind="primary"] {min-height: 46px;}
+}
+</style>
+""", unsafe_allow_html=True)
 HEADERS = {"User-Agent": "BurakCryptoRadar/1.0", "accept": "application/json"}
 STABLE = {"usdt", "usdc", "dai", "fdusd", "tusd", "usde", "usdd", "pyusd", "frax"}
 
@@ -491,7 +506,7 @@ def okx_derivatives(inst_id):
 
 
 
-st.title("📡 BURAK CRYPTO RADAR V5.8 — OKX + BIST")
+st.title("📡 BURAK CRYPTO RADAR V5.9 — OKX + BIST")
 st.caption("Yalnızca OKX USDT perpetual verileri • LONG / SHORT araştırma sinyalleri • Otomatik emir göndermez")
 with st.sidebar:
     st.header("🎛️ Radar koşulları")
@@ -531,7 +546,7 @@ with st.sidebar:
         st.cache_data.clear()
         st.rerun()
 
-radar_tab, whale_tab, market_tab, bist_tab, futures, methodology = st.tabs(["🟢🔴 OKX Perpetual Radar", "🐋 OKX Balina / Akıllı Para", "🌍 OKX Piyasa Yönü", "🇹🇷 BIST Radar", "⚠️ Vadeli risk ekranı", "ℹ️ Metodoloji"])
+mobile_tab, radar_tab, whale_tab, market_tab, bist_tab, futures, methodology = st.tabs(["📱 iPhone", "🟢🔴 OKX Perpetual Radar", "🐋 OKX Balina / Akıllı Para", "🌍 OKX Piyasa Yönü", "🇹🇷 BIST Radar", "⚠️ Vadeli risk ekranı", "ℹ️ Metodoloji"])
 
 def analyze_okx_coin(item, okx_interval, stop_mult, target_mult, cfg):
     inst = item["Parite"]
@@ -749,6 +764,66 @@ with radar_tab:
     st.divider()
     compare_strategies_ui(condition_cfg)
 
+
+
+with mobile_tab:
+    st.subheader("📱 BURAK RADAR | iPhone")
+    st.caption("iPhone 14 Pro için sade görünüm · OKX USDT perpetual · Emir göndermez")
+    st.info("Strateji ve NKRAL ayarları sol üstteki ☰ menüsündedir. Bu ekran mevcut analiz motorunu kullanır.")
+    m_tf = st.segmented_control("Zaman dilimi", ["1h", "4h"], default="1h", key="mobile_tf")
+    m_coins = st.multiselect("Takip listem", ["BTC", "ETH", "SOL", "HYPE", "XRP", "DOGE", "BNB", "SUI", "WLD", "AVAX", "LINK", "ADA"],
+                             default=["BTC", "ETH", "SOL"], max_selections=6, key="mobile_watch")
+    m_extra = st.text_input("Başka coin ekle (sembol)", placeholder="Örn. PEPE", key="mobile_extra").strip().upper()
+    m_symbols = list(dict.fromkeys(m_coins + ([m_extra.removesuffix("-USDT-SWAP").removesuffix("-USDT")] if m_extra else [])))
+    st.caption(f"Seçili strateji: **{strategy_mode}** · NKRAL sinyalleri son kapanmış mumdan, mevcut radar açık mumdan hesaplanır.")
+    m_refresh = st.selectbox("Otomatik yenileme", [1, 2, 3, 5, 10, 15], index=3,
+                             format_func=lambda x: f"{x} dakika", key="mobile_refresh")
+    if st.button("🔄 Şimdi yenile", use_container_width=True, key="mobile_reload"):
+        st.cache_data.clear()
+        st.rerun()
+
+    @st.fragment(run_every=f"{m_refresh * 60}s")
+    def mobile_watchlist():
+        if not m_symbols:
+            st.warning("Takip listene en az bir coin ekle.")
+            return
+        try:
+            universe = okx_perpetual_universe()
+        except Exception as exc:
+            st.error(f"OKX listesi alınamadı: {exc}")
+            return
+        for symbol in m_symbols:
+            inst = symbol + "-USDT-SWAP"
+            match = universe[universe["Parite"] == inst]
+            if match.empty:
+                st.warning(f"{symbol}: OKX USDT perpetual bulunamadı.")
+                continue
+            try:
+                result = analyze_okx_coin(match.iloc[0], m_tf, 1.5, 3.0, condition_cfg)
+            except Exception as exc:
+                st.warning(f"{symbol}: veri/analiz hatası ({type(exc).__name__}: {exc})")
+                continue
+            with st.container(border=True):
+                st.markdown(f"### {symbol} · {result['Fırsat durumu']}")
+                st.caption(f"{result['Strateji']} · {m_tf} · {result['Sinyal mumu']}")
+                x, y = st.columns(2)
+                x.metric("Fiyat ($)", f"{result['Fiyat ($)']:,.6g}")
+                y.metric("Risk/Ödül", f"{result['Risk/Ödül']:.2f}" if np.isfinite(result['Risk/Ödül']) else "—")
+                x, y = st.columns(2)
+                x.metric("LONG koşul", result["LONG koşul"])
+                y.metric("SHORT koşul", result["SHORT koşul"])
+                with st.expander("📊 Teknik detaylar ve seviyeler"):
+                    st.write("**Eksik koşullar:**", result["Eksik koşul"])
+                    st.write("**NKRAL AL / SAT:**", result["NKRAL AL (son kapanış)"], "/", result["NKRAL SAT (son kapanış)"])
+                    st.write("**Fib 1h LONG / SHORT:**", result["Fib 1h LONG"], "/", result["Fib 1h SHORT"])
+                    st.write("**Fib 4h LONG / SHORT:**", result["Fib 4h LONG"], "/", result["Fib 4h SHORT"])
+                    for label in ("Referans giriş ($)", "Stop ($)", "Hedef ($)", "NKRAL stop ($)", "RSI", "ADX", "Funding %", "OI ($)"):
+                        value = result.get(label)
+                        st.write(f"**{label}:**", f"{value:,.6g}" if isinstance(value, (int, float, np.integer, np.floating)) and np.isfinite(value) else "—")
+        st.caption("⚠️ Açık mumdaki radar sinyali değişebilir; NKRAL kapanmış mum kesişimi yeni mum gelene kadar korunur.")
+
+    mobile_watchlist()
+    st.caption("iPhone Safari: Paylaş → Ana Ekrana Ekle. Bu bir web uygulaması kısayoludur; App Store uygulaması veya çevrimdışı PWA değildir.")
 
 
 # The whale tab uses only public OKX market aggregates, never private wallets.
