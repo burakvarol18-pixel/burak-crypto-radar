@@ -1,4 +1,4 @@
-"""BURAK CRYPTO RADAR V5.5 — OKX + BIST USDT perpetual market research only.
+"""BURAK CRYPTO RADAR V5.6 — OKX + BIST USDT perpetual market research only.
 No orders, account access, or leverage execution.
 """
 import numpy as np
@@ -7,7 +7,7 @@ import plotly.graph_objects as go
 import requests
 import streamlit as st
 
-st.set_page_config(page_title="Burak Crypto Radar V5.5 — OKX + BIST", page_icon="📡", layout="wide")
+st.set_page_config(page_title="Burak Crypto Radar V5.6 — OKX + BIST", page_icon="📡", layout="wide")
 HEADERS = {"User-Agent": "BurakCryptoRadar/1.0", "accept": "application/json"}
 STABLE = {"usdt", "usdc", "dai", "fdusd", "tusd", "usde", "usdd", "pyusd", "frax"}
 
@@ -314,7 +314,7 @@ def okx_derivatives(inst_id):
 
 
 
-st.title("📡 BURAK CRYPTO RADAR V5.5 — OKX + BIST")
+st.title("📡 BURAK CRYPTO RADAR V5.6 — OKX + BIST")
 st.caption("Yalnızca OKX USDT perpetual verileri • LONG / SHORT araştırma sinyalleri • Otomatik emir göndermez")
 with st.sidebar:
     st.header("🎛️ Radar koşulları")
@@ -932,7 +932,7 @@ def okx_book_snapshot(inst_id):
 def orderbook_heatmap():
     st.subheader("🔥 OKX Emir Defteri Isı Haritası")
     st.info("Bu harita gerçekleşmemiş BEKLEYEN limit alış/satış emirlerini gösterir; açılmış LONG/SHORT pozisyonlarını, pozisyonların giriş fiyatlarını veya likidasyon kümelerini göstermez. Emirler anlık iptal edilebilir.")
-    x1, x2, x3 = st.columns([2, 1, 1])
+    x1, x2, x3, x4 = st.columns([2, 1, 1, 1])
     with x1:
         symbol = st.text_input("USDT perpetual coin", "BTC", key="depth_symbol",
                                help="BTC, ETH, SOL veya BTC-USDT-SWAP yazabilirsin.")
@@ -942,6 +942,13 @@ def orderbook_heatmap():
     with x3:
         bands = st.selectbox("Fiyat dilimi", [30, 50, 80, 100],
                              index=1, key="depth_bands")
+    with x4:
+        timeframe = st.selectbox("⏱️ Zaman dilimi", ["1h", "4h", "1d"],
+                                 format_func=lambda x: {"1h": "1 saat", "4h": "4 saat", "1d": "Günlük"}[x],
+                                 key="depth_timeframe")
+    range_mode = st.radio("Harita fiyat ölçeği", ["Seçilen mumun aralığı", "Orta fiyat ±%"],
+                          horizontal=True, key="depth_range_mode")
+    st.caption("Zaman dilimi fiyat aralığını ve mum seviyelerini belirler; bekleyen emirler her zaman ANLIK defterden gelir. Geçmiş 1s/4s/günlük emir birikimi değildir.")
     raw = symbol.strip().upper().replace("/", "-").replace(" ", "")
     base = raw.removesuffix("-USDT-SWAP").removesuffix("-USDT")
     if not base or not base.replace("-", "").isalnum():
@@ -957,7 +964,14 @@ def orderbook_heatmap():
             st.warning("Alış ve satış tarafları birlikte alınamadı.")
             return
         mid = (best_bid + best_ask) / 2
-        lo, hi = mid * (1 - distance / 100), mid * (1 + distance / 100)
+        candle = okx_candles(inst_id, timeframe).iloc[-1]
+        candle_low, candle_high = float(candle["low"]), float(candle["high"])
+        if range_mode == "Seçilen mumun aralığı":
+            padding = max((candle_high - candle_low) * .05, mid * .001)
+            lo = min(candle_low - padding, best_bid)
+            hi = max(candle_high + padding, best_ask)
+        else:
+            lo, hi = mid * (1 - distance / 100), mid * (1 + distance / 100)
         inside = df[df["Fiyat ($)"].between(lo, hi)].copy()
         if inside.empty:
             st.warning("Seçilen fiyat aralığında emir bulunamadı.")
@@ -985,6 +999,11 @@ def orderbook_heatmap():
             colorbar=dict(title="log(1 + USD)")))
         heat.add_hline(y=mid, line_dash="dash", line_color="#e5e7eb",
                        annotation_text="Orta fiyat", annotation_position="top right")
+        for level, label, color in ((candle_low, "Mum dip", "#38bdf8"),
+                                    (candle_high, "Mum tepe", "#fbbf24")):
+            if lo <= level <= hi:
+                heat.add_hline(y=level, line_dash="dot", line_color=color,
+                               annotation_text=label, annotation_position="bottom right")
         heat.update_layout(height=620, xaxis_title="Emir tarafı",
                            yaxis_title="Fiyat ($)", margin=dict(l=20, r=20, t=20, b=20))
         st.plotly_chart(heat, use_container_width=True)
@@ -993,7 +1012,7 @@ def orderbook_heatmap():
         c2.metric("En iyi satış ($)", f"{best_ask:,.6g}")
         c3.metric("Gösterilen nominal ($)", f"{inside['Nominal ($)'].sum():,.0f}")
         st.caption(f"OKX anlık defter zamanı: {ts.strftime('%Y-%m-%d %H:%M:%S UTC')} · "
-                   f"Orta fiyat: ${mid:,.6g} · ±%{distance:g} aralık · "
+                   f"Orta fiyat: ${mid:,.6g} · {timeframe} mum dip/tepe: ${candle_low:,.6g} / ${candle_high:,.6g} · "
                    "Her taraftan en fazla 400 fiyat kademesi; yalnızca bu kademeler toplanır. "
                    "Renk yoğunluğu logaritmiktir; dolar tutarı üzerine gelince görünür.")
         band_table = pd.DataFrame({"Fiyat ($)": centers,
@@ -1007,7 +1026,7 @@ def orderbook_heatmap():
                            band_table.to_csv(index=False).encode("utf-8-sig"),
                            f"okx_{base.lower()}_emir_defteri.csv", "text/csv",
                            key="depth_download")
-        st.caption("Bu tek zamanlı bir emir defteri fotoğrafıdır; geçmişte biriken likidite haritası değildir. "
+        st.caption("Zaman dilimi seçimi yalnızca fiyat ölçeğini ve mum referansını değiştirir. Bu tek zamanlı bir emir defteri fotoğrafıdır; geçmişte biriken likidite haritası değildir. "
                    "Açık pozisyon (OI) toplamı fiyat seviyelerine dağıtılamaz.")
     except Exception as exc:
         st.error(f"Emir defteri alınamadı: {type(exc).__name__}: {exc}")
