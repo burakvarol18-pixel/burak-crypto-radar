@@ -990,16 +990,16 @@ def paper_close_position(state, p, price, reason):
     """Settle a single virtual position at an observed OKX ticker price."""
     now = datetime.now(timezone.utc)
     exit_price = price
-        exit_fee = p["notional"] * (price / p["entry"]) * .0005
-        pnl = p["direction"] * p["notional"] * (price / p["entry"] - 1) - p["entry_fee"] - exit_fee
-        state["cash"] += p["margin"] + p["direction"] * p["notional"] * (price / p["entry"] - 1) - exit_fee
-        state["trades"].append({
-            "Parite": p["inst"], "Yön": "LONG" if p["direction"] == 1 else "SHORT",
-            "Strateji": p["strategy"], "Risk/Ödül": p.get("reward_ratio", 2), "Giriş UTC": p["time"], "Çıkış UTC": now.isoformat(timespec="seconds"),
-            "Giriş": p["entry"], "Çıkış": exit_price, "Net P&L (USDT)": round(pnl, 4),
-            "Çıkış nedeni": reason
-        })
-        state["positions"].remove(p)
+    exit_fee = p["notional"] * (price / p["entry"]) * .0005
+    pnl = p["direction"] * p["notional"] * (price / p["entry"] - 1) - p["entry_fee"] - exit_fee
+    state["cash"] += p["margin"] + p["direction"] * p["notional"] * (price / p["entry"] - 1) - exit_fee
+    state["trades"].append({
+        "Parite": p["inst"], "Yön": "LONG" if p["direction"] == 1 else "SHORT",
+        "Strateji": p["strategy"], "Risk/Ödül": p.get("reward_ratio", 2), "Giriş UTC": p["time"], "Çıkış UTC": now.isoformat(timespec="seconds"),
+        "Giriş": p["entry"], "Çıkış": exit_price, "Net P&L (USDT)": round(pnl, 4),
+        "Çıkış nedeni": reason
+    })
+    state["positions"].remove(p)
     return pnl
 
 
