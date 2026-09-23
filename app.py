@@ -1,13 +1,18 @@
-"""BURAK CRYPTO RADAR V6.0 — OKX + BIST USDT perpetual market research only.
-No orders, account access, or leverage execution.
+"""BURAK CRYPTO RADAR V6.1 — OKX + BIST and read-only OKX account view.
+No order placement, cancellation, transfers, or leverage execution.
 """
+import base64
+import hashlib
+import hmac
+from datetime import datetime, timezone
+
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 import requests
 import streamlit as st
 
-st.set_page_config(page_title="Burak Crypto Radar V6.0 — OKX + BIST", page_icon="📡", layout="wide")
+st.set_page_config(page_title="Burak Crypto Radar V6.1 — OKX + BIST", page_icon="📡", layout="wide")
 st.markdown("""
 <style>
 @media (max-width: 600px) {
@@ -23,6 +28,49 @@ st.markdown("""
 }
 </style>
 """, unsafe_allow_html=True)
+def okx_private_get(path, credentials):
+    """Read-only OKX v5 GET; no private POST/DELETE capabilities in this app."""
+    timestamp = datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+    signature = base64.b64encode(hmac.new(
+        credentials["secret_key"].encode("utf-8"),
+        (timestamp + "GET" + path).encode("utf-8"),
+        hashlib.sha256
+    ).digest()).decode("ascii")
+    headers = {
+        "OK-ACCESS-KEY": credentials["api_key"],
+        "OK-ACCESS-SIGN": signature,
+        "OK-ACCESS-TIMESTAMP": timestamp,
+        "OK-ACCESS-PASSPHRASE": credentials["passphrase"],
+        "Content-Type": "application/json",
+    }
+    if credentials.get("demo", False):
+        headers["x-simulated-trading"] = "1"
+    try:
+        response = requests.get("https://www.okx.com" + path, headers=headers, timeout=18)
+        response.raise_for_status()
+        payload = response.json()
+    except (requests.RequestException, ValueError) as exc:
+        raise RuntimeError("OKX bağlantısı kurulamadı; ağ erişimini ve API ayarlarını kontrol et.") from None
+    if payload.get("code") != "0":
+        code = str(payload.get("code", "bilinmiyor"))
+        raise RuntimeError(f"OKX isteği reddetti (hata kodu: {code}). API yetkilerini, demo/canlı seçimini ve sunucu saatini kontrol et.")
+    return payload.get("data", [])
+
+
+def okx_account_secrets():
+    try:
+        cfg = st.secrets.get("okx", {})
+        return {
+            "api_key": str(cfg.get("api_key", "")).strip(),
+            "secret_key": str(cfg.get("secret_key", "")).strip(),
+            "passphrase": str(cfg.get("passphrase", "")),
+            "dashboard_password": str(cfg.get("dashboard_password", "")),
+            "demo": bool(cfg.get("demo", False)),
+        }
+    except (FileNotFoundError, KeyError):
+        return {}
+
+
 HEADERS = {"User-Agent": "BurakCryptoRadar/1.0", "accept": "application/json"}
 STABLE = {"usdt", "usdc", "dai", "fdusd", "tusd", "usde", "usdd", "pyusd", "frax"}
 
@@ -506,7 +554,7 @@ def okx_derivatives(inst_id):
 
 
 
-st.title("📡 BURAK CRYPTO RADAR V6.0 — OKX + BIST")
+st.title("📡 BURAK CRYPTO RADAR V6.1 — OKX + BIST")
 st.caption("Yalnızca OKX USDT perpetual verileri • LONG / SHORT araştırma sinyalleri • Otomatik emir göndermez")
 with st.sidebar:
     st.header("🎛️ Radar koşulları")
@@ -556,7 +604,7 @@ with st.sidebar:
         st.cache_data.clear()
         st.rerun()
 
-mobile_tab, radar_tab, whale_tab, market_tab, bist_tab, futures, methodology = st.tabs(["📱 iPhone", "🟢🔴 OKX Perpetual Radar", "🐋 OKX Balina / Akıllı Para", "🌍 OKX Piyasa Yönü", "🇹🇷 BIST Radar", "⚠️ Vadeli risk ekranı", "ℹ️ Metodoloji"])
+mobile_tab, account_tab, radar_tab, whale_tab, market_tab, bist_tab, futures, methodology = st.tabs(["📱 iPhone", "🔐 OKX Hesabım", "🟢🔴 OKX Perpetual Radar", "🐋 OKX Balina / Akıllı Para", "🌍 OKX Piyasa Yönü", "🇹🇷 BIST Radar", "⚠️ Vadeli risk ekranı", "ℹ️ Metodoloji"])
 
 def analyze_okx_coin(item, okx_interval, stop_mult, target_mult, cfg):
     inst = item["Parite"]
@@ -834,6 +882,84 @@ with mobile_tab:
 
     mobile_watchlist()
     st.caption("iPhone Safari: Paylaş → Ana Ekrana Ekle. Bu bir web uygulaması kısayoludur; App Store uygulaması veya çevrimdışı PWA değildir.")
+
+
+with account_tab:
+    st.subheader("🔐 OKX Hesabım — salt okunur V6.1")
+    st.caption("Bakiye, açık pozisyon ve bekleyen emir görüntüleme. Bu uygulamada emir açma, kapatma veya para çekme kodu yoktur.")
+    credentials = okx_account_secrets()
+    configured = all(credentials.get(k) for k in ("api_key", "secret_key", "passphrase", "dashboard_password"))
+    if not configured:
+        st.warning("Hesap bağlantısı henüz yapılandırılmadı. API bilgilerini buraya veya GitHub'a yazma.")
+        st.markdown("**Kurulum:** Streamlit Community Cloud → uygulaman → Settings → Secrets alanına aşağıdaki şablonu kendi bilgilerinle gir:")
+        st.code('[okx]\\napi_key = "OKX_API_KEY"\\nsecret_key = "OKX_SECRET_KEY"\\npassphrase = "OKX_PASSPHRASE"\\ndashboard_password = "UZUN_BENZERSIZ_PANEL_SIFRESI"\\ndemo = false', language="toml")
+        st.info("OKX API anahtarını yalnızca Read (Okuma) yetkisiyle oluştur. Trade ve Withdraw izinlerini açma. Panel şifresini API passphrase'inden farklı belirle.")
+        st.caption("Bu uygulamanın genel radar sekmeleri herkese açık kalır. Hesap sekmesi ayrı panel şifresi ile korunur. Daha güçlü erişim kontrolü için tüm uygulamayı özel erişime al.")
+    else:
+        if not st.session_state.get("okx_account_unlocked", False):
+            with st.form("okx_account_login"):
+                supplied_password = st.text_input("Hesap paneli şifresi", type="password")
+                login = st.form_submit_button("🔓 Hesabımı göster", use_container_width=True)
+            if login:
+                if hmac.compare_digest(supplied_password.encode("utf-8"), credentials["dashboard_password"].encode("utf-8")):
+                    st.session_state["okx_account_unlocked"] = True
+                    st.rerun()
+                else:
+                    st.error("Panel şifresi hatalı.")
+        else:
+            left, right = st.columns(2)
+            if left.button("🔄 Hesabı yenile", use_container_width=True, key="okx_account_refresh"):
+                st.rerun()
+            if right.button("🔒 Paneli kilitle", use_container_width=True, key="okx_account_lock"):
+                st.session_state["okx_account_unlocked"] = False
+                st.rerun()
+            st.caption("Ortam: " + ("OKX Demo" if credentials["demo"] else "OKX Canlı") + " · Her yenilemede yalnızca GET istekleri gönderilir.")
+            try:
+                balances = okx_private_get("/api/v5/account/balance", credentials)
+                positions = okx_private_get("/api/v5/account/positions?instType=SWAP", credentials)
+                pending = okx_private_get("/api/v5/trade/orders-pending?instType=SWAP", credentials)
+                account = balances[0] if balances else {}
+                details = account.get("details", [])
+                usdt = next((item for item in details if item.get("ccy") == "USDT"), {})
+                def fmt_amount(value, decimals=2):
+                    try:
+                        return f"{float(value):,.{decimals}f}"
+                    except (TypeError, ValueError):
+                        return "—"
+                a, b = st.columns(2)
+                a.metric("Toplam hesap özkaynağı (USDT karşılığı)", fmt_amount(account.get("totalEq")))
+                b.metric("Kullanılabilir USDT", fmt_amount(usdt.get("availBal") or usdt.get("availEq")))
+                a, b = st.columns(2)
+                a.metric("USDT özkaynak", fmt_amount(usdt.get("eq")))
+                b.metric("USDT gerçekleşmemiş P&L", fmt_amount(usdt.get("upl")))
+                st.caption("500 USDT bot bütçesi henüz emir yetkisine bağlı değil; burada görünen toplam hesap özkaynağı farklı para birimlerini de içerebilir.")
+                st.markdown("#### Açık USDT perpetual pozisyonları")
+                active = [p for p in positions if float(p.get("pos") or 0) != 0]
+                if active:
+                    fields = {
+                        "instId": "Parite", "posSide": "Yön", "pos": "Kontrat",
+                        "avgPx": "Giriş ($)", "markPx": "Mark fiyatı ($)",
+                        "lever": "Kaldıraç", "mgnMode": "Marjin", "upl": "P&L (USDT)",
+                        "liqPx": "Likidasyon ($)"
+                    }
+                    st.dataframe(pd.DataFrame(active).reindex(columns=fields).rename(columns=fields),
+                                 use_container_width=True, hide_index=True)
+                else:
+                    st.success("Açık perpetual pozisyon bulunamadı.")
+                st.markdown("#### Bekleyen USDT perpetual emirleri")
+                if pending:
+                    fields = {
+                        "instId": "Parite", "side": "Emir", "posSide": "Pozisyon yönü",
+                        "ordType": "Tip", "px": "Fiyat ($)", "sz": "Kontrat",
+                        "state": "Durum", "clOrdId": "İstemci emir ID"
+                    }
+                    st.dataframe(pd.DataFrame(pending).reindex(columns=fields).rename(columns=fields),
+                                 use_container_width=True, hide_index=True)
+                else:
+                    st.info("Bekleyen standart perpetual emir bulunamadı.")
+                st.caption("Koşullu stop/TP emirleri bu ilk sürümün bekleyen emir tablosuna dahil değildir. OKX API verileri anlık değişebilir.")
+            except RuntimeError as exc:
+                st.error(str(exc))
 
 
 # The whale tab uses only public OKX market aggregates, never private wallets.
