@@ -1,4 +1,4 @@
-"""BURAK CRYPTO RADAR V6.6 — OKX + BIST and read-only OKX account view.
+"""BURAK CRYPTO RADAR V6.7 — OKX + BIST and read-only OKX account view.
 No order placement, cancellation, transfers, or leverage execution.
 """
 import base64
@@ -12,7 +12,7 @@ import plotly.graph_objects as go
 import requests
 import streamlit as st
 
-st.set_page_config(page_title="Burak Crypto Radar V6.6 — OKX + BIST", page_icon="📡", layout="wide")
+st.set_page_config(page_title="Burak Crypto Radar V6.7 — OKX + BIST", page_icon="📡", layout="wide")
 st.markdown("""
 <style>
 @media (max-width: 600px) {
@@ -554,7 +554,7 @@ def okx_derivatives(inst_id):
 
 
 
-st.title("📡 BURAK CRYPTO RADAR V6.6 — OKX + BIST")
+st.title("📡 BURAK CRYPTO RADAR V6.7 — OKX + BIST")
 st.caption("Yalnızca OKX USDT perpetual verileri • LONG / SHORT araştırma sinyalleri • Otomatik emir göndermez")
 with st.sidebar:
     st.header("🎛️ Radar koşulları")
@@ -1127,7 +1127,7 @@ def paper_scan(state, cfg, universe, max_coins, reward_ratio):
 
 
 with paper_tab:
-    st.subheader("🧪 Paper Trading V6.6 — 500 USDT / 5x / seçili strateji")
+    st.subheader("🧪 Paper Trading V6.7 — 500 USDT / 5x / seçili strateji")
     st.warning("Bu bir OTURUM İÇİ simülasyondur: tarayıcı/oturum kapalıyken veya uygulama uyuduğunda otomatik tarama/stop çalışmaz; uygulama yeniden başlarsa kayıtlar silinebilir. 7/24 bot veya güvenilir geçmiş performans testi değildir.")
     st.caption("Gerçek OKX hesabına emir gönderilmez. İşlemler sanal 500 USDT ile, maksimum 5 isolated pozisyon ve işlem başına en fazla 5 USDT brüt planlanan stop riskiyle modellenir. Pozisyon başına teminat en fazla özkaynağın %16’sı, toplam ayrılan teminat en fazla %80’idir.")
     paper_creds = okx_account_secrets()
@@ -1200,39 +1200,40 @@ with paper_tab:
             b.metric("Sanal nakit", f"{ps['cash']:,.2f} USDT")
             c.metric("Açık pozisyon", f"{len(ps['positions'])}/5")
             if ps["positions"]:
-                table = []
-                for p in ps["positions"]:
-                    mark = current_quotes.get(p["inst"], p["entry"])
-                    table.append({
-                        "Parite": p["inst"], "Yön": "LONG" if p["direction"] == 1 else "SHORT",
-                        "Giriş": p["entry"], "Gözlenen fiyat": mark,
-                        "Stop": p["stop"], "Hedef": p["target"], "Risk/Ödül": f"1:{p.get('reward_ratio', 2)}",
-                        "Teminat USDT": round(p["margin"], 2),
-                        "Açık P&L USDT": round(p["direction"] * p["notional"] * (mark / p["entry"] - 1) - p["entry_fee"], 2)
-                    })
-                st.dataframe(pd.DataFrame(table), use_container_width=True, hide_index=True)
-                st.markdown("**✋ Sanal pozisyonu manuel kapat**")
-                st.caption("Tam pozisyonu güncel OKX ticker fiyatından sanal olarak kapatır; komisyon düşülür. Gerçek borsaya emir gönderilmez.")
+                st.markdown("**📂 Açık sanal pozisyonlar**")
+                st.caption("Her kart yalnızca kendi pozisyonunu kapatır. Kapatma tam miktar ve güncel OKX ticker fiyatı üzerinden sanaldır.")
                 for p in list(ps["positions"]):
-                    col_name, col_button = st.columns([3, 1])
-                    col_name.write(f"{p['inst']} · {'LONG' if p['direction'] == 1 else 'SHORT'}")
-                    if col_button.button("Kapat", key=f"paper_close_{p['inst']}_{p['time']}",
-                                         use_container_width=True):
-                        try:
-                            okx_perpetual_universe.clear()
-                            fresh = okx_perpetual_universe()
-                            match = fresh.loc[fresh["Parite"] == p["inst"], "Fiyat ($)"]
-                            if match.empty or float(match.iloc[0]) <= 0:
-                                st.error("Güncel OKX fiyatı alınamadı; pozisyon açık bırakıldı.")
-                            elif p not in ps["positions"]:
-                                st.warning("Bu pozisyon zaten kapanmış.")
-                            else:
-                                exit_price = float(match.iloc[0])
-                                net = paper_close_position(ps, p, exit_price, "MANUEL")
-                                st.toast(f"{p['inst']} sanal kapatıldı · net P&L: {net:+.2f} USDT")
-                                st.rerun()
-                        except (ValueError, KeyError, TypeError, requests.RequestException, RuntimeError):
-                            st.error("OKX fiyatı alınamadı; pozisyon açık bırakıldı.")
+                    mark = current_quotes.get(p["inst"], p["entry"])
+                    pnl = p["direction"] * p["notional"] * (mark / p["entry"] - 1) - p["entry_fee"]
+                    side = "🟢 LONG" if p["direction"] == 1 else "🔴 SHORT"
+                    with st.container(border=True):
+                        st.markdown(f"**{p['inst']} · {side}**")
+                        x1, x2, x3 = st.columns(3)
+                        x1.metric("Giriş", f"{p['entry']:,.6g} USDT")
+                        x2.metric("Gözlenen fiyat", f"{mark:,.6g} USDT")
+                        x3.metric("Açık net P&L (tahmini)", f"{pnl:+,.2f} USDT")
+                        y1, y2, y3 = st.columns(3)
+                        y1.caption(f"Stop: {p['stop']:,.6g}")
+                        y2.caption(f"Hedef: {p['target']:,.6g}")
+                        y3.caption(f"Teminat: {p['margin']:,.2f} USDT · R/Ö 1:{p.get('reward_ratio', 2)}")
+                        if st.button(f"✋ Yalnızca {p['inst']} pozisyonunu kapat",
+                                     key=f"paper_close_{p['inst']}_{p['time']}",
+                                     use_container_width=True):
+                            try:
+                                okx_perpetual_universe.clear()
+                                fresh = okx_perpetual_universe()
+                                match = fresh.loc[fresh["Parite"] == p["inst"], "Fiyat ($)"]
+                                if match.empty or float(match.iloc[0]) <= 0:
+                                    st.error("Güncel OKX fiyatı alınamadı; pozisyon açık bırakıldı.")
+                                elif p not in ps["positions"]:
+                                    st.warning("Bu pozisyon zaten kapanmış.")
+                                else:
+                                    exit_price = float(match.iloc[0])
+                                    net = paper_close_position(ps, p, exit_price, "MANUEL")
+                                    st.toast(f"{p['inst']} sanal kapatıldı · net P&L: {net:+.2f} USDT")
+                                    st.rerun()
+                            except (ValueError, KeyError, TypeError, requests.RequestException, RuntimeError):
+                                st.error("OKX fiyatı alınamadı; pozisyon açık bırakıldı.")
             else:
                 st.info("Açık sanal pozisyon yok.")
             if ps["trades"]:
