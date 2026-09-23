@@ -1,4 +1,4 @@
-"""BURAK CRYPTO RADAR V6.2 — OKX + BIST and read-only OKX account view.
+"""BURAK CRYPTO RADAR V6.3 — OKX + BIST and read-only OKX account view.
 No order placement, cancellation, transfers, or leverage execution.
 """
 import base64
@@ -12,7 +12,7 @@ import plotly.graph_objects as go
 import requests
 import streamlit as st
 
-st.set_page_config(page_title="Burak Crypto Radar V6.2 — OKX + BIST", page_icon="📡", layout="wide")
+st.set_page_config(page_title="Burak Crypto Radar V6.3 — OKX + BIST", page_icon="📡", layout="wide")
 st.markdown("""
 <style>
 @media (max-width: 600px) {
@@ -554,7 +554,7 @@ def okx_derivatives(inst_id):
 
 
 
-st.title("📡 BURAK CRYPTO RADAR V6.2 — OKX + BIST")
+st.title("📡 BURAK CRYPTO RADAR V6.3 — OKX + BIST")
 st.caption("Yalnızca OKX USDT perpetual verileri • LONG / SHORT araştırma sinyalleri • Otomatik emir göndermez")
 with st.sidebar:
     st.header("🎛️ Radar koşulları")
@@ -967,7 +967,7 @@ with account_tab:
 def paper_state():
     if "paper_v62" not in st.session_state:
         st.session_state["paper_v62"] = {
-            "cash": 500., "positions": [], "trades": [], "seen": [],
+            "cash": 500., "positions": [], "trades": [], "seen": [], "strategy": None,
             "running": False, "day": "", "day_start": 500., "last_scan": ""
         }
     return st.session_state["paper_v62"]
@@ -1005,7 +1005,7 @@ def paper_scan(state, cfg, universe, max_coins):
         state["cash"] += p["margin"] + p["direction"] * p["notional"] * (price / p["entry"] - 1) - exit_fee
         state["trades"].append({
             "Parite": p["inst"], "Yön": "LONG" if p["direction"] == 1 else "SHORT",
-            "Giriş UTC": p["time"], "Çıkış UTC": now.isoformat(timespec="seconds"),
+            "Strateji": p["strategy"], "Giriş UTC": p["time"], "Çıkış UTC": now.isoformat(timespec="seconds"),
             "Giriş": p["entry"], "Çıkış": exit_price, "Net P&L (USDT)": round(pnl, 4),
             "Çıkış nedeni": "STOP" if stop_hit else "HEDEF"
         })
@@ -1015,7 +1015,7 @@ def paper_scan(state, cfg, universe, max_coins):
         state["running"] = False
         return "Günlük 15 USDT zarar eşiği görüldü; yeni sanal işlemler durduruldu."
     if not state["running"]:
-        return "Simülasyon duraklatılmış."
+        return "Simülasyon duraklatılmış."\n    if state["strategy"] != cfg["strategy"]:\n        return "Strateji değişti. Yeni strateji için sanal oturumu sıfırlayıp yeniden başlat."
     scanned, errors, opened = 0, 0, 0
     for _, item in universe.head(max_coins).iterrows():
         if len(state["positions"]) >= 2 or state["cash"] < 10:
@@ -1032,8 +1032,32 @@ def paper_scan(state, cfg, universe, max_coins):
             signal_key = inst + "|" + bar_id
             if signal_key in state["seen"]:
                 continue
-            states, _ = strategy_states(closed, cfg, cfg["nk_sens"], cfg["nk_atr"])
-            direction = int(states["Hibrit"][-1])
+            mode = cfg["strategy"]
+            nk = nkral_signals(closed, cfg["nk_sens"], cfg["nk_atr"])
+            nk_direction = (1 if bool(nk["NK AL"].iloc[-1]) else
+                            -1 if bool(nk["NK SAT"].iloc[-1]) else 0)
+            radar_direction = 0
+            if mode != "NKRAL1":
+                indicators = technical(closed, cfg)
+                if indicators is None:
+                    continue
+                active = [name for name, enabled in cfg["enabled"].items() if enabled]
+                fib_active = [tf for tf in ("1h", "4h") if cfg["fib"][tf]]
+                count = len(active) + len(fib_active)
+                if count:
+                    long_tests = indicators["_long_tests"]
+                    short_tests = indicators["_short_tests"]
+                    long_ok = all(long_tests[name] for name in active)
+                    short_ok = all(short_tests[name] for name in active)
+                    signal_price = float(closed["close"].iloc[-1])
+                    for tf in fib_active:
+                        fib_frame = frame if tf == "1h" else okx_candles(inst, tf)
+                        long_ok = long_ok and fibonacci_check(fib_frame, signal_price, "LONG", cfg["fib_atr"])[0]
+                        short_ok = short_ok and fibonacci_check(fib_frame, signal_price, "SHORT", cfg["fib_atr"])[0]
+                    radar_direction = 1 if long_ok and not short_ok else (-1 if short_ok and not long_ok else 0)
+            direction = (nk_direction if mode == "NKRAL1" else
+                         radar_direction if mode == "Mevcut Radar" else
+                         radar_direction if radar_direction == nk_direction else 0)
             state["seen"].append(signal_key)
             if direction == 0:
                 continue
@@ -1061,7 +1085,7 @@ def paper_scan(state, cfg, universe, max_coins):
                 continue
             state["cash"] -= margin + entry_fee
             state["positions"].append({
-                "inst": inst, "direction": direction, "entry": price,
+                "inst": inst, "strategy": cfg["strategy"], "direction": direction, "entry": price,
                 "stop": stop, "target": target, "notional": notional,
                 "margin": margin, "entry_fee": entry_fee,
                 "time": now.isoformat(timespec="seconds"), "bar": bar_id
@@ -1077,7 +1101,7 @@ def paper_scan(state, cfg, universe, max_coins):
 
 
 with paper_tab:
-    st.subheader("🧪 Paper Trading V6.2 — 500 USDT / 5x / Hibrit")
+    st.subheader("🧪 Paper Trading V6.3 — 500 USDT / 5x / seçili strateji")
     st.warning("Bu bir OTURUM İÇİ simülasyondur: sekme kapalıyken tarama/stop çalışmaz; uygulama yeniden başlarsa kayıtlar silinebilir. 7/24 bot veya güvenilir geçmiş performans testi değildir.")
     st.caption("Gerçek OKX hesabına emir gönderilmez. İşlemler sanal 500 USDT ile, maksimum 2 isolated pozisyon ve işlem başına 5 USDT brüt planlanan stop riskiyle modellenir.")
     paper_creds = okx_account_secrets()
@@ -1085,9 +1109,22 @@ with paper_tab:
         st.info("Bu sekme için önce 🔐 OKX Hesabım bölümünde panel şifrenle giriş yap.")
     else:
         ps = paper_state()
+        st.write("Sol menüde seçilen strateji:", strategy_mode)
+        if ps["strategy"] is not None and ps["strategy"] != strategy_mode:
+            st.warning("Sanal oturum " + ps["strategy"] + " ile açıldı. Yeni strateji için oturumu sıfırla.")
         if st.button("▶️ Sanal botu başlat / duraklat", use_container_width=True, key="paper_toggle"):
-            ps["running"] = not ps["running"]
-            st.rerun()
+            if ps["strategy"] is None:
+                ps["strategy"] = strategy_mode
+            if ps["strategy"] != strategy_mode:
+                st.error("Önce sanal oturumu sıfırla veya önceki stratejiyi seç.")
+            else:
+                ps["running"] = not ps["running"]
+                st.rerun()
+        with st.expander("🗑️ Sanal oturumu sıfırla / strateji değiştir"):
+            st.caption("Sanal bakiye, açık pozisyonlar ve işlem geçmişi silinir. Önce CSV indirebilirsin.")
+            if st.button("Sanal oturumu sıfırla", key="paper_reset"):
+                del st.session_state["paper_v62"]
+                st.rerun()
         st.write("Durum:", "🟢 Çalışıyor (yalnızca açık sayfada)" if ps["running"] else "⏸️ Duraklatıldı")
         scan_count = st.select_slider("Her turda hacme göre taranacak coin", [10, 20, 30, 40, 50, 60], value=30,
                                       help="V6.2 prototipi bütün OKX coinlerini taramaz; ilk 60'a kadar seçilebilir.")
@@ -1099,7 +1136,7 @@ with paper_tab:
                 st.info(message)
             except (ValueError, requests.RequestException, KeyError) as exc:
                 st.error(f"Tarama başarısız: {type(exc).__name__}")
-        st.caption("Hibrit teyidi aynı kapanmış 1H mumda NKRAL1 + teknik radar eşleşmesidir. Bu ilk simülasyonda 1H/4H Fibonacci teyitleri uygulanmaz; canlı radarın tam kopyası değildir.")
+        st.caption("Mevcut Radar: seçili teknik + 1H/4H Fibonacci teyitleri. NKRAL1: kapanmış mum kesişimi. Hibrit: aynı kapanmış 1H mumda NKRAL1 + teknik/Fibonacci teyidi. Canlı radar açık mum kullandığından anlık sinyaller farklı olabilir.")
         try:
             current_quotes = {r["Parite"]: float(r["Fiyat ($)"]) for _, r in okx_perpetual_universe().iterrows()}
         except (ValueError, requests.RequestException, KeyError):
