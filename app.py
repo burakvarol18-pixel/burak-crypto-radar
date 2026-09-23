@@ -970,7 +970,12 @@ def paper_state():
             "cash": 500., "positions": [], "trades": [], "seen": [], "strategy": None,
             "running": False, "day": "", "day_start": 500., "last_scan": ""
         }
-    return st.session_state["paper_v62"]
+    state = st.session_state["paper_v62"]
+    # Upgrade an existing V6.2 session without deleting its paper balance/history.
+    state.setdefault("strategy", None)
+    for position in state.get("positions", []):
+        position.setdefault("strategy", "Hibrit (V6.2)")
+    return state
 
 
 def paper_equity(state, quotes):
