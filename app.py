@@ -1,4 +1,4 @@
-"""BURAK CRYPTO RADAR V6.7 — OKX + BIST and read-only OKX account view.
+"""BURAK CRYPTO RADAR V6.8 — OKX + BIST and read-only OKX account view.
 No order placement, cancellation, transfers, or leverage execution.
 """
 import base64
@@ -12,7 +12,7 @@ import plotly.graph_objects as go
 import requests
 import streamlit as st
 
-st.set_page_config(page_title="Burak Crypto Radar V6.7 — OKX + BIST", page_icon="📡", layout="wide")
+st.set_page_config(page_title="Burak Crypto Radar V6.8 — OKX + BIST", page_icon="📡", layout="wide")
 st.markdown("""
 <style>
 @media (max-width: 600px) {
@@ -554,7 +554,7 @@ def okx_derivatives(inst_id):
 
 
 
-st.title("📡 BURAK CRYPTO RADAR V6.7 — OKX + BIST")
+st.title("📡 BURAK CRYPTO RADAR V6.8 — OKX + BIST")
 st.caption("Yalnızca OKX USDT perpetual verileri • LONG / SHORT araştırma sinyalleri • Otomatik emir göndermez")
 with st.sidebar:
     st.header("🎛️ Radar koşulları")
@@ -1020,7 +1020,7 @@ def paper_check_exits(state, quotes):
     return closed_count
 
 
-def paper_scan(state, cfg, universe, max_coins, reward_ratio):
+def paper_scan(state, cfg, universe, max_coins, reward_ratio, allow_manual=False):
     """One on-demand simulation tick. Closed-bar same-timeframe technical hybrid;
     with cross-timeframe Fibonacci. No exchange orders."""
     now = datetime.now(timezone.utc)
@@ -1033,8 +1033,8 @@ def paper_scan(state, cfg, universe, max_coins, reward_ratio):
     if state["day_start"] - equity >= 15:
         state["running"] = False
         return "Günlük 15 USDT zarar eşiği görüldü; yeni sanal işlemler durduruldu."
-    if not state["running"]:
-        return "Simülasyon duraklatılmış."
+    if not state["running"] and not allow_manual:
+        return "Otomatik simülasyon duraklatılmış."
     if state["strategy"] != cfg["strategy"]:
         return "Strateji değişti. Yeni strateji için sanal oturumu sıfırlayıp yeniden başlat."
     scanned, errors, opened = 0, 0, 0
@@ -1127,7 +1127,7 @@ def paper_scan(state, cfg, universe, max_coins, reward_ratio):
 
 
 with paper_tab:
-    st.subheader("🧪 Paper Trading V6.7 — 500 USDT / 5x / seçili strateji")
+    st.subheader("🧪 Paper Trading V6.8 — 500 USDT / 5x / seçili strateji")
     st.warning("Bu bir OTURUM İÇİ simülasyondur: tarayıcı/oturum kapalıyken veya uygulama uyuduğunda otomatik tarama/stop çalışmaz; uygulama yeniden başlarsa kayıtlar silinebilir. 7/24 bot veya güvenilir geçmiş performans testi değildir.")
     st.caption("Gerçek OKX hesabına emir gönderilmez. İşlemler sanal 500 USDT ile, maksimum 5 isolated pozisyon ve işlem başına en fazla 5 USDT brüt planlanan stop riskiyle modellenir. Pozisyon başına teminat en fazla özkaynağın %16’sı, toplam ayrılan teminat en fazla %80’idir.")
     paper_creds = okx_account_secrets()
@@ -1138,20 +1138,35 @@ with paper_tab:
         st.write("Sol menüde seçilen strateji:", strategy_mode)
         if ps["strategy"] is not None and ps["strategy"] != strategy_mode:
             st.warning("Sanal oturum " + ps["strategy"] + " ile açıldı. Yeni strateji için oturumu sıfırla.")
-        if st.button("▶️ Sanal botu başlat / duraklat", use_container_width=True, key="paper_toggle"):
-            if ps["strategy"] is None:
-                ps["strategy"] = strategy_mode
-            if ps["strategy"] != strategy_mode:
-                st.error("Önce sanal oturumu sıfırla veya önceki stratejiyi seç.")
-            else:
-                ps["running"] = not ps["running"]
-                st.rerun()
+        paper_mode = st.radio(
+            "🔎 Sanal tarama modu",
+            ["Manuel tarama", "Otomatik tarama (5 dakikada bir)"],
+            horizontal=True, key="paper_scan_mode",
+            help="Manuel modda yeni işlem yalnızca tarama butonuyla aranır. Otomatik modda Başlat butonu gerekir."
+        )
+        if paper_mode == "Manuel tarama":
+            ps["running"] = False
+            st.info("Manuel mod: yalnızca 🔎 Sanal tarama butonuna bastığında sinyal, stop ve hedef kontrolü yapılır.")
+        else:
+            if st.button("⏸️ Otomatik taramayı duraklat" if ps["running"]
+                         else "▶️ Otomatik taramayı başlat (5 dk)",
+                         use_container_width=True, key="paper_toggle"):
+                if ps["strategy"] is None:
+                    ps["strategy"] = strategy_mode
+                if ps["strategy"] != strategy_mode:
+                    st.error("Önce sanal oturumu sıfırla veya önceki stratejiyi seç.")
+                else:
+                    ps["running"] = not ps["running"]
+                    if ps["running"]:
+                        ps["last_auto_scan_ts"] = 0.
+                    st.rerun()
+            st.write("Otomatik durum:", "🟢 Aktif · 5 dakikada bir" if ps["running"]
+                     else "⏸️ Duraklatıldı")
         with st.expander("🗑️ Sanal oturumu sıfırla / strateji değiştir"):
             st.caption("Sanal bakiye, açık pozisyonlar ve işlem geçmişi silinir. Önce CSV indirebilirsin.")
             if st.button("Sanal oturumu sıfırla", key="paper_reset"):
                 del st.session_state["paper_v62"]
                 st.rerun()
-        st.write("Durum:", "🟢 Etkin (sayfa açıkken otomatik kontrol)" if ps["running"] else "⏸️ Duraklatıldı")
         reward_ratio = st.selectbox("Risk / Ödül oranı", [2, 3, 4, 5],
                                     format_func=lambda x: f"1:{x}", index=0,
                                     key="paper_reward_ratio",
@@ -1163,7 +1178,10 @@ with paper_tab:
             try:
                 with st.spinner("OKX kapanmış mumları kontrol ediliyor..."):
                     pu = okx_perpetual_universe()
-                    message = paper_scan(ps, condition_cfg, pu, scan_count, reward_ratio)
+                    if ps["strategy"] is None:
+                        ps["strategy"] = strategy_mode
+                    message = paper_scan(ps, condition_cfg, pu, scan_count, reward_ratio,
+                                         allow_manual=(paper_mode == "Manuel tarama"))
                 st.info(message)
             except (ValueError, requests.RequestException, KeyError) as exc:
                 st.error(f"Tarama başarısız: {type(exc).__name__}")
@@ -1178,20 +1196,25 @@ with paper_tab:
             except (ValueError, requests.RequestException, KeyError, RuntimeError) as exc:
                 current_quotes = {}
                 st.warning("OKX fiyatları güncellenemedi; son bilinen fiyatlar kullanılıyor.")
-            if ps["running"] and current_quotes:
+            if paper_mode == "Otomatik tarama (5 dakikada bir)" and ps["running"] and current_quotes:
                 closed_count = paper_check_exits(ps, current_quotes)
                 if closed_count:
                     st.success(f"{closed_count} sanal pozisyon stop/hedef nedeniyle kapatıldı.")
-                # New 1H bar: scan once per hour while the browser session is alive.
-                hour_key = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H")
-                if ps.get("last_auto_hour") != hour_key:
+                # Scan on activation, then at 300-second intervals while the UI session is alive.
+                now_ts = datetime.now(timezone.utc).timestamp()
+                elapsed = now_ts - float(ps.get("last_auto_scan_ts", 0))
+                if elapsed >= 300:
                     try:
                         result = paper_scan(ps, condition_cfg, live_universe,
                                             scan_count, reward_ratio)
-                        ps["last_auto_hour"] = hour_key
-                        st.info("Otomatik 1H tarama: " + result)
+                        ps["last_auto_scan_ts"] = now_ts
+                        st.info("Otomatik 5 dk tarama: " + result)
                     except (ValueError, requests.RequestException, KeyError, RuntimeError) as exc:
                         st.warning(f"Otomatik tarama tamamlanamadı: {type(exc).__name__}. Sonraki yenilemede tekrar denenecek.")
+                if ps["running"] and ps.get("last_auto_scan_ts", 0):
+                    remaining = max(0, 300 - (datetime.now(timezone.utc).timestamp() -
+                                               ps["last_auto_scan_ts"]))
+                    st.caption(f"Sonraki otomatik taramaya yaklaşık {remaining:.0f} saniye.")
             st.caption("Son ekran kontrolü: " + datetime.now(timezone.utc).strftime("%H:%M:%S UTC") +
                        " · OKX ticker önbelleği 15 sn · ekran kontrolü yaklaşık 10 sn.")
             eq = paper_equity(ps, current_quotes)
@@ -1242,7 +1265,7 @@ with paper_tab:
                 st.download_button("📥 İşlem geçmişini CSV indir", history.to_csv(index=False).encode("utf-8-sig"),
                                    "burak_paper_trades.csv", "text/csv")
         paper_live_monitor()
-        st.caption("Her giriş ve çıkışta varsayımsal %0,05 komisyon kullanılır; fonlama, spread, kayma ve likidasyon modellenmez. Stop/hedef açık oturumda yaklaşık 10 saniyede bir kontrol edilir (OKX ticker önbelleği 15 saniye); mum sinyali saatlik taranır. Kontroller arasında stop geçişleri kaçabilir.")
+        st.caption("Her giriş ve çıkışta varsayımsal %0,05 komisyon kullanılır; fonlama, spread, kayma ve likidasyon modellenmez. Otomatik mod aktifken stop/hedef açık oturumda yaklaşık 10 saniyede bir kontrol edilir (OKX ticker önbelleği 15 saniye), yeni sinyal 5 dakikada bir taranır. Manuel modda kontrol yalnızca tarama butonuyla yapılır. Kontroller arasında stop geçişleri kaçabilir.")
 
 
 # The whale tab uses only public OKX market aggregates, never private wallets.
