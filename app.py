@@ -1,4 +1,4 @@
-"""BURAK CRYPTO RADAR V6.8 — OKX + BIST and read-only OKX account view.
+"""BURAK CRYPTO RADAR V6.9 — OKX + BIST and read-only OKX account view.
 No order placement, cancellation, transfers, or leverage execution.
 """
 import base64
@@ -964,14 +964,59 @@ with account_tab:
 
 # V6.2: paper ledger is scoped to the current authenticated Streamlit session.
 # It deliberately has NO API trade permission, durable storage or background worker.
+def paper_default_state():
+    return {"cash": 500., "positions": [], "trades": [], "seen": [], "strategy": None,
+            "running": False, "day": "", "day_start": 500., "last_scan": ""}
+
+
+def paper_db_request(method, payload=None):
+    """Supabase REST calls only on the Streamlit server; never expose secret keys."""
+    cfg = st.secrets.get("supabase", {})
+    url = str(cfg.get("url", "")).strip().rstrip("/")
+    key = str(cfg.get("secret_key", "")).strip()
+    if not url.startswith("https://") or not key:
+        raise RuntimeError("Streamlit Secrets [supabase] url / secret_key eksik.")
+    headers = {"apikey": key, "Authorization": "Bearer " + key,
+               "Content-Type": "application/json"}
+    if method == "POST":
+        headers["Prefer"] = "resolution=merge-duplicates,return=minimal"
+    response = requests.request(
+        method, url + "/rest/v1/paper_trading_state", headers=headers,
+        params={"account_id": "eq.burak_paper_main"} if method == "GET" else
+               {"on_conflict": "account_id"}, json=payload, timeout=15
+    )
+    response.raise_for_status()
+    return response.json() if method == "GET" else None
+
+
+def paper_db_load():
+    rows = paper_db_request("GET")
+    if not rows:
+        return None
+    state = rows[0].get("state")
+    if not isinstance(state, dict) or not all(k in state for k in ("cash", "positions", "trades")):
+        raise RuntimeError("Kalıcı sanal hesap kaydı beklenen biçimde değil.")
+    state["running"] = False  # Never silently resume automation on a new session.
+    state.setdefault("strategy", None)
+    state.setdefault("seen", [])
+    state.setdefault("day", "")
+    state.setdefault("day_start", 500.)
+    state.setdefault("last_scan", "")
+    for p in state["positions"]:
+        p.setdefault("strategy", "Hibrit (V6.2)")
+    return state
+
+
+def paper_db_save(state):
+    import json
+    safe = json.loads(json.dumps(state, allow_nan=False))
+    paper_db_request("POST", [{"account_id": "burak_paper_main", "state": safe}])
+
+
 def paper_state():
     if "paper_v62" not in st.session_state:
-        st.session_state["paper_v62"] = {
-            "cash": 500., "positions": [], "trades": [], "seen": [], "strategy": None,
-            "running": False, "day": "", "day_start": 500., "last_scan": ""
-        }
+        st.session_state["paper_v62"] = paper_default_state()
     state = st.session_state["paper_v62"]
-    # Upgrade an existing V6.2 session without deleting its paper balance/history.
     state.setdefault("strategy", None)
     for position in state.get("positions", []):
         position.setdefault("strategy", "Hibrit (V6.2)")
@@ -1127,14 +1172,26 @@ def paper_scan(state, cfg, universe, max_coins, reward_ratio, allow_manual=False
 
 
 with paper_tab:
-    st.subheader("🧪 Paper Trading V6.8 — 500 USDT / 5x / seçili strateji")
+    st.subheader("🧪 Paper Trading V6.9 — 500 USDT / 5x / seçili strateji")
     st.warning("Bu bir OTURUM İÇİ simülasyondur: tarayıcı/oturum kapalıyken veya uygulama uyuduğunda otomatik tarama/stop çalışmaz; uygulama yeniden başlarsa kayıtlar silinebilir. 7/24 bot veya güvenilir geçmiş performans testi değildir.")
     st.caption("Gerçek OKX hesabına emir gönderilmez. İşlemler sanal 500 USDT ile, maksimum 5 isolated pozisyon ve işlem başına en fazla 5 USDT brüt planlanan stop riskiyle modellenir. Pozisyon başına teminat en fazla özkaynağın %16’sı, toplam ayrılan teminat en fazla %80’idir.")
     paper_creds = okx_account_secrets()
     if not paper_creds.get("dashboard_password") or not st.session_state.get("okx_account_unlocked", False):
         st.info("Bu sekme için önce 🔐 OKX Hesabım bölümünde panel şifrenle giriş yap.")
     else:
+        if not st.session_state.get("paper_db_loaded", False):
+            try:
+                saved = paper_db_load()
+                if saved is None:
+                    paper_db_save(paper_state())
+                else:
+                    st.session_state["paper_v62"] = saved
+                st.session_state["paper_db_loaded"] = True
+            except (RuntimeError, ValueError, requests.RequestException) as exc:
+                st.error("Supabase bağlantısı kurulamadı; veri kaybını önlemek için sanal işlem durduruldu: " + str(exc))
+                st.stop()
         ps = paper_state()
+        st.caption("☁️ Supabase kalıcı hafıza etkin · Yeniden açılan oturumda otomatik tarama duraklatılır.")
         st.write("Sol menüde seçilen strateji:", strategy_mode)
         if ps["strategy"] is not None and ps["strategy"] != strategy_mode:
             st.warning("Sanal oturum " + ps["strategy"] + " ile açıldı. Yeni strateji için oturumu sıfırla.")
@@ -1165,8 +1222,13 @@ with paper_tab:
         with st.expander("🗑️ Sanal oturumu sıfırla / strateji değiştir"):
             st.caption("Sanal bakiye, açık pozisyonlar ve işlem geçmişi silinir. Önce CSV indirebilirsin.")
             if st.button("Sanal oturumu sıfırla", key="paper_reset"):
-                del st.session_state["paper_v62"]
-                st.rerun()
+                try:
+                    fresh_state = paper_default_state()
+                    paper_db_save(fresh_state)
+                    st.session_state["paper_v62"] = fresh_state
+                    st.rerun()
+                except (RuntimeError, ValueError, requests.RequestException) as exc:
+                    st.error("Sıfırlama kaydedilemedi; eski kayıt korundu: " + str(exc))
         reward_ratio = st.selectbox("Risk / Ödül oranı", [2, 3, 4, 5],
                                     format_func=lambda x: f"1:{x}", index=0,
                                     key="paper_reward_ratio",
@@ -1182,8 +1244,9 @@ with paper_tab:
                         ps["strategy"] = strategy_mode
                     message = paper_scan(ps, condition_cfg, pu, scan_count, reward_ratio,
                                          allow_manual=(paper_mode == "Manuel tarama"))
+                paper_db_save(ps)
                 st.info(message)
-            except (ValueError, requests.RequestException, KeyError) as exc:
+            except (ValueError, requests.RequestException, KeyError, RuntimeError) as exc:
                 st.error(f"Tarama başarısız: {type(exc).__name__}")
         st.caption("Mevcut Radar: seçili teknik + 1H/4H Fibonacci teyitleri. NKRAL1: kapanmış mum kesişimi. Hibrit: aynı kapanmış 1H mumda NKRAL1 + teknik/Fibonacci teyidi. Canlı radar açık mum kullandığından anlık sinyaller farklı olabilir.")
         @st.fragment(run_every="10s")
@@ -1215,6 +1278,15 @@ with paper_tab:
                     remaining = max(0, 300 - (datetime.now(timezone.utc).timestamp() -
                                                ps["last_auto_scan_ts"]))
                     st.caption(f"Sonraki otomatik taramaya yaklaşık {remaining:.0f} saniye.")
+            import json
+            try:
+                fingerprint = json.dumps(ps, sort_keys=True, allow_nan=False)
+                if st.session_state.get("paper_db_last_saved") != fingerprint:
+                    paper_db_save(ps)
+                    st.session_state["paper_db_last_saved"] = fingerprint
+            except (RuntimeError, ValueError, requests.RequestException) as exc:
+                ps["running"] = False
+                st.error("☁️ Kayıt başarısız; otomatik tarama durduruldu: " + str(exc))
             st.caption("Son ekran kontrolü: " + datetime.now(timezone.utc).strftime("%H:%M:%S UTC") +
                        " · OKX ticker önbelleği 15 sn · ekran kontrolü yaklaşık 10 sn.")
             eq = paper_equity(ps, current_quotes)
@@ -1254,6 +1326,7 @@ with paper_tab:
                                     exit_price = float(match.iloc[0])
                                     net = paper_close_position(ps, p, exit_price, "MANUEL")
                                     st.toast(f"{p['inst']} sanal kapatıldı · net P&L: {net:+.2f} USDT")
+                                    paper_db_save(ps)
                                     st.rerun()
                             except (ValueError, KeyError, TypeError, requests.RequestException, RuntimeError):
                                 st.error("OKX fiyatı alınamadı; pozisyon açık bırakıldı.")
