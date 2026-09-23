@@ -1188,30 +1188,30 @@ with paper_tab:
                         st.warning(f"Otomatik tarama tamamlanamadı: {type(exc).__name__}. Sonraki yenilemede tekrar denenecek.")
             st.caption("Son ekran kontrolü: " + datetime.now(timezone.utc).strftime("%H:%M:%S UTC") +
                        " · OKX ticker önbelleği 15 sn · ekran kontrolü yaklaşık 10 sn.")
-        eq = paper_equity(ps, current_quotes)
-        a, b, c = st.columns(3)
-        a.metric("Sanal özkaynak", f"{eq:,.2f} USDT")
-        b.metric("Sanal nakit", f"{ps['cash']:,.2f} USDT")
-        c.metric("Açık pozisyon", f"{len(ps['positions'])}/5")
-        if ps["positions"]:
-            table = []
-            for p in ps["positions"]:
-                mark = current_quotes.get(p["inst"], p["entry"])
-                table.append({
-                    "Parite": p["inst"], "Yön": "LONG" if p["direction"] == 1 else "SHORT",
-                    "Giriş": p["entry"], "Gözlenen fiyat": mark,
-                    "Stop": p["stop"], "Hedef": p["target"], "Risk/Ödül": f"1:{p.get('reward_ratio', 2)}",
-                    "Teminat USDT": round(p["margin"], 2),
-                    "Açık P&L USDT": round(p["direction"] * p["notional"] * (mark / p["entry"] - 1) - p["entry_fee"], 2)
-                })
-            st.dataframe(pd.DataFrame(table), use_container_width=True, hide_index=True)
-        else:
-            st.info("Açık sanal pozisyon yok.")
-        if ps["trades"]:
-            history = pd.DataFrame(ps["trades"])
-            st.dataframe(history.iloc[::-1], use_container_width=True, hide_index=True)
-            st.download_button("📥 İşlem geçmişini CSV indir", history.to_csv(index=False).encode("utf-8-sig"),
-                               "burak_paper_trades.csv", "text/csv")
+            eq = paper_equity(ps, current_quotes)
+            a, b, c = st.columns(3)
+            a.metric("Sanal özkaynak", f"{eq:,.2f} USDT")
+            b.metric("Sanal nakit", f"{ps['cash']:,.2f} USDT")
+            c.metric("Açık pozisyon", f"{len(ps['positions'])}/5")
+            if ps["positions"]:
+                table = []
+                for p in ps["positions"]:
+                    mark = current_quotes.get(p["inst"], p["entry"])
+                    table.append({
+                        "Parite": p["inst"], "Yön": "LONG" if p["direction"] == 1 else "SHORT",
+                        "Giriş": p["entry"], "Gözlenen fiyat": mark,
+                        "Stop": p["stop"], "Hedef": p["target"], "Risk/Ödül": f"1:{p.get('reward_ratio', 2)}",
+                        "Teminat USDT": round(p["margin"], 2),
+                        "Açık P&L USDT": round(p["direction"] * p["notional"] * (mark / p["entry"] - 1) - p["entry_fee"], 2)
+                    })
+                st.dataframe(pd.DataFrame(table), use_container_width=True, hide_index=True)
+            else:
+                st.info("Açık sanal pozisyon yok.")
+            if ps["trades"]:
+                history = pd.DataFrame(ps["trades"])
+                st.dataframe(history.iloc[::-1], use_container_width=True, hide_index=True)
+                st.download_button("📥 İşlem geçmişini CSV indir", history.to_csv(index=False).encode("utf-8-sig"),
+                                   "burak_paper_trades.csv", "text/csv")
         paper_live_monitor()
         st.caption("Her giriş ve çıkışta varsayımsal %0,05 komisyon kullanılır; fonlama, spread, kayma ve likidasyon modellenmez. Stop/hedef açık oturumda yaklaşık 10 saniyede bir kontrol edilir (OKX ticker önbelleği 15 saniye); mum sinyali saatlik taranır. Kontroller arasında stop geçişleri kaçabilir.")
 
