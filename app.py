@@ -1,4 +1,4 @@
-"""BURAK CRYPTO RADAR V6.3 — OKX + BIST and read-only OKX account view.
+"""BURAK CRYPTO RADAR V6.4 — OKX + BIST and read-only OKX account view.
 No order placement, cancellation, transfers, or leverage execution.
 """
 import base64
@@ -12,7 +12,7 @@ import plotly.graph_objects as go
 import requests
 import streamlit as st
 
-st.set_page_config(page_title="Burak Crypto Radar V6.3 — OKX + BIST", page_icon="📡", layout="wide")
+st.set_page_config(page_title="Burak Crypto Radar V6.4 — OKX + BIST", page_icon="📡", layout="wide")
 st.markdown("""
 <style>
 @media (max-width: 600px) {
@@ -554,7 +554,7 @@ def okx_derivatives(inst_id):
 
 
 
-st.title("📡 BURAK CRYPTO RADAR V6.3 — OKX + BIST")
+st.title("📡 BURAK CRYPTO RADAR V6.4 — OKX + BIST")
 st.caption("Yalnızca OKX USDT perpetual verileri • LONG / SHORT araştırma sinyalleri • Otomatik emir göndermez")
 with st.sidebar:
     st.header("🎛️ Radar koşulları")
@@ -986,9 +986,9 @@ def paper_equity(state, quotes):
     )
 
 
-def paper_scan(state, cfg, universe, max_coins):
+def paper_scan(state, cfg, universe, max_coins, reward_ratio):
     """One on-demand simulation tick. Closed-bar same-timeframe technical hybrid;
-    no cross-timeframe Fibonacci. No exchange orders."""
+    with cross-timeframe Fibonacci. No exchange orders."""
     now = datetime.now(timezone.utc)
     today = now.strftime("%Y-%m-%d")
     if state["day"] != today:
@@ -1010,7 +1010,7 @@ def paper_scan(state, cfg, universe, max_coins):
         state["cash"] += p["margin"] + p["direction"] * p["notional"] * (price / p["entry"] - 1) - exit_fee
         state["trades"].append({
             "Parite": p["inst"], "Yön": "LONG" if p["direction"] == 1 else "SHORT",
-            "Strateji": p["strategy"], "Giriş UTC": p["time"], "Çıkış UTC": now.isoformat(timespec="seconds"),
+            "Strateji": p["strategy"], "Risk/Ödül": p.get("reward_ratio", 2), "Giriş UTC": p["time"], "Çıkış UTC": now.isoformat(timespec="seconds"),
             "Giriş": p["entry"], "Çıkış": exit_price, "Net P&L (USDT)": round(pnl, 4),
             "Çıkış nedeni": "STOP" if stop_hit else "HEDEF"
         })
@@ -1025,7 +1025,7 @@ def paper_scan(state, cfg, universe, max_coins):
         return "Strateji değişti. Yeni strateji için sanal oturumu sıfırlayıp yeniden başlat."
     scanned, errors, opened = 0, 0, 0
     for _, item in universe.head(max_coins).iterrows():
-        if len(state["positions"]) >= 2 or state["cash"] < 10:
+        if len(state["positions"]) >= 5 or state["cash"] < 10:
             break
         inst = item["Parite"]
         if any(p["inst"] == inst for p in state["positions"]):
@@ -1080,12 +1080,17 @@ def paper_scan(state, cfg, universe, max_coins):
             if not np.isfinite(atr) or atr <= 0 or price <= 0:
                 continue
             stop = price - direction * 1.5 * atr
-            target = price + direction * 3.0 * atr
+            target = price + direction * (1.5 * reward_ratio) * atr
             if stop <= 0 or target <= 0:
                 continue
             stop_fraction = 1.5 * atr / price
-            # Plan 5 USDT gross stop risk; cap by remaining isolated margin.
-            notional = min(5. / stop_fraction, state["cash"] * 5 * .45)
+            # Gross stop risk <=5 USDT, per-position margin <=16% equity,
+            # total reserved margin <=80% equity.
+            current_equity = paper_equity(state, quotes)
+            reserved_margin = sum(p["margin"] for p in state["positions"])
+            available_margin = max(0., current_equity * .80 - reserved_margin)
+            notional = min(5. / stop_fraction, current_equity * 5 * .16,
+                           available_margin * 5, state["cash"] * 5 * .95)
             margin = notional / 5
             entry_fee = notional * .0005
             if margin + entry_fee > state["cash"] or notional < 10:
@@ -1093,7 +1098,7 @@ def paper_scan(state, cfg, universe, max_coins):
             state["cash"] -= margin + entry_fee
             state["positions"].append({
                 "inst": inst, "strategy": cfg["strategy"], "direction": direction, "entry": price,
-                "stop": stop, "target": target, "notional": notional,
+                "stop": stop, "target": target, "reward_ratio": reward_ratio, "notional": notional,
                 "margin": margin, "entry_fee": entry_fee,
                 "time": now.isoformat(timespec="seconds"), "bar": bar_id
             })
@@ -1108,9 +1113,9 @@ def paper_scan(state, cfg, universe, max_coins):
 
 
 with paper_tab:
-    st.subheader("🧪 Paper Trading V6.3 — 500 USDT / 5x / seçili strateji")
+    st.subheader("🧪 Paper Trading V6.4 — 500 USDT / 5x / seçili strateji")
     st.warning("Bu bir OTURUM İÇİ simülasyondur: sekme kapalıyken tarama/stop çalışmaz; uygulama yeniden başlarsa kayıtlar silinebilir. 7/24 bot veya güvenilir geçmiş performans testi değildir.")
-    st.caption("Gerçek OKX hesabına emir gönderilmez. İşlemler sanal 500 USDT ile, maksimum 2 isolated pozisyon ve işlem başına 5 USDT brüt planlanan stop riskiyle modellenir.")
+    st.caption("Gerçek OKX hesabına emir gönderilmez. İşlemler sanal 500 USDT ile, maksimum 5 isolated pozisyon ve işlem başına en fazla 5 USDT brüt planlanan stop riskiyle modellenir. Pozisyon başına teminat en fazla özkaynağın %16’sı, toplam ayrılan teminat en fazla %80’idir.")
     paper_creds = okx_account_secrets()
     if not paper_creds.get("dashboard_password") or not st.session_state.get("okx_account_unlocked", False):
         st.info("Bu sekme için önce 🔐 OKX Hesabım bölümünde panel şifrenle giriş yap.")
@@ -1133,13 +1138,18 @@ with paper_tab:
                 del st.session_state["paper_v62"]
                 st.rerun()
         st.write("Durum:", "🟢 Çalışıyor (yalnızca açık sayfada)" if ps["running"] else "⏸️ Duraklatıldı")
+        reward_ratio = st.selectbox("Risk / Ödül oranı", [2, 3, 4, 5],
+                                    format_func=lambda x: f"1:{x}", index=0,
+                                    key="paper_reward_ratio",
+                                    help="Stop 1,5 ATR sabit; hedef oran × 1,5 ATR. Açık işlemlerin hedefi değişmez.")
+        st.caption(f"Yeni sanal işlemler: stop 1,5 ATR · hedef {1.5 * reward_ratio:g} ATR · en fazla 5 açık pozisyon.")
         scan_count = st.select_slider("Her turda hacme göre taranacak coin", [10, 20, 30, 40, 50, 60], value=30,
                                       help="V6.2 prototipi bütün OKX coinlerini taramaz; ilk 60'a kadar seçilebilir.")
         if st.button("🔎 Sanal tarama + stop/hedef kontrolü", type="primary", use_container_width=True):
             try:
                 with st.spinner("OKX kapanmış mumları kontrol ediliyor..."):
                     pu = okx_perpetual_universe()
-                    message = paper_scan(ps, condition_cfg, pu, scan_count)
+                    message = paper_scan(ps, condition_cfg, pu, scan_count, reward_ratio)
                 st.info(message)
             except (ValueError, requests.RequestException, KeyError) as exc:
                 st.error(f"Tarama başarısız: {type(exc).__name__}")
@@ -1152,7 +1162,7 @@ with paper_tab:
         a, b, c = st.columns(3)
         a.metric("Sanal özkaynak", f"{eq:,.2f} USDT")
         b.metric("Sanal nakit", f"{ps['cash']:,.2f} USDT")
-        c.metric("Açık pozisyon", f"{len(ps['positions'])}/2")
+        c.metric("Açık pozisyon", f"{len(ps['positions'])}/5")
         if ps["positions"]:
             table = []
             for p in ps["positions"]:
@@ -1160,7 +1170,7 @@ with paper_tab:
                 table.append({
                     "Parite": p["inst"], "Yön": "LONG" if p["direction"] == 1 else "SHORT",
                     "Giriş": p["entry"], "Gözlenen fiyat": mark,
-                    "Stop": p["stop"], "Hedef": p["target"],
+                    "Stop": p["stop"], "Hedef": p["target"], "Risk/Ödül": f"1:{p.get('reward_ratio', 2)}",
                     "Teminat USDT": round(p["margin"], 2),
                     "Açık P&L USDT": round(p["direction"] * p["notional"] * (mark / p["entry"] - 1) - p["entry_fee"], 2)
                 })
