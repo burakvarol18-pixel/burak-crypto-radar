@@ -1,4 +1,4 @@
-"""BURAK CRYPTO RADAR V5.9 — OKX + BIST USDT perpetual market research only.
+"""BURAK CRYPTO RADAR V6.0 — OKX + BIST USDT perpetual market research only.
 No orders, account access, or leverage execution.
 """
 import numpy as np
@@ -7,7 +7,7 @@ import plotly.graph_objects as go
 import requests
 import streamlit as st
 
-st.set_page_config(page_title="Burak Crypto Radar V5.9 — OKX + BIST", page_icon="📡", layout="wide")
+st.set_page_config(page_title="Burak Crypto Radar V6.0 — OKX + BIST", page_icon="📡", layout="wide")
 st.markdown("""
 <style>
 @media (max-width: 600px) {
@@ -506,30 +506,40 @@ def okx_derivatives(inst_id):
 
 
 
-st.title("📡 BURAK CRYPTO RADAR V5.9 — OKX + BIST")
+st.title("📡 BURAK CRYPTO RADAR V6.0 — OKX + BIST")
 st.caption("Yalnızca OKX USDT perpetual verileri • LONG / SHORT araştırma sinyalleri • Otomatik emir göndermez")
 with st.sidebar:
     st.header("🎛️ Radar koşulları")
     strategy_mode = st.selectbox("🧭 Strateji seçimi",
                                  ["Mevcut Radar", "NKRAL1", "Hibrit"],
                                  key="strategy_mode")
-    nk_sens = st.number_input("NKRAL ATR hassasiyeti", .1, 10., 1., .1, key="nk_sens")
-    nk_atr = st.number_input("NKRAL ATR periyodu", 1, 100, 10, key="nk_atr")
+    nk_sens = st.number_input("NKRAL ATR hassasiyeti — stop mesafesi", .1, 10., 1., .1, key="nk_sens", help="ATR çarpanı: düşük değer fiyatı daha yakından izler ve daha sık kesişim üretebilir; yüksek değer daha geniş stop verir.")
+    nk_atr = st.number_input("NKRAL ATR periyodu — oynaklık süresi", 1, 100, 10, key="nk_atr", help="ATR hesaplamasında kullanılan mum sayısı; varsayılan 10.")
     st.caption("NKRAL1: ATR trailing stop kesişimi. Hibrit: NKRAL1 kesişimi ve mevcut radar aynı yönde.")
     st.caption("Bu ayarlar OKX LONG/SHORT radarı ve manuel coin analizine uygulanır. Diğer sekmelerin hesaplamaları bağımsızdır.")
     with st.expander("🟢🔴 Teknik teyitler", expanded=True):
-        enabled = {name: st.checkbox(name, value=True, key="condition_" + name)
-                   for name in ("EMA", "MACD", "DI", "ADX", "RSI", "Hacim")}
-        st.caption("İşaretini kaldırdığın koşul sinyal hesabından çıkarılır; gösterge tabloda görünmeye devam eder.")
+        technical_info = {
+            "EMA": ("Trend yönü", "Üstel hareketli ortalama. LONG: fiyat EMA20 > EMA50; SHORT: fiyat EMA20 < EMA50."),
+            "MACD": ("Momentum", "MACD çizgisi sinyal çizgisinin üstündeyse LONG, altındaysa SHORT yönünü destekler."),
+            "DI": ("Alıcı / satıcı baskısı", "+DI > -DI alış, -DI > +DI satış yönünü destekler."),
+            "ADX": ("Trend gücü", "Trendin yönünü değil gücünü ölçer. Seçtiğin minimum ADX değerinin üstü aranır."),
+            "RSI": ("Göreli güç", "Fiyat momentumunu 0–100 aralığında ölçer. LONG/SHORT için ayrı RSI aralıkları kullanılır."),
+            "Hacim": ("İşlem yoğunluğu", "Güncel mumun yaklaşık hacmini önceki 20 mumun ortalamasıyla karşılaştırır.")
+        }
+        enabled = {}
+        for name, (short_desc, full_desc) in technical_info.items():
+            enabled[name] = st.checkbox(f"{name} — {short_desc}", value=True,
+                                        key="condition_" + name, help=full_desc)
+        st.caption("Açıklamanın ayrıntısı için ⓘ simgesine dokun. İşaretini kaldırdığın koşul sinyal hesabından çıkarılır; tabloda görünmeye devam eder.")
     with st.expander("📐 Fibonacci teyitleri", expanded=True):
-        fib_1h = st.checkbox("1 saatlik Fibonacci", value=True, key="condition_fib_1h")
-        fib_4h = st.checkbox("4 saatlik Fibonacci", value=True, key="condition_fib_4h")
-        fib_atr = st.slider("Fib yakınlığı (ATR)", 0.25, 3.0, 1.0, 0.25, key="condition_fib_atr")
+        fib_1h = st.checkbox("1 saatlik Fibonacci — fiyat seviyeleri", value=True, key="condition_fib_1h", help="1 saatlik kapanmış mumların fiyat aralığındaki Fibonacci seviyesine yakınlık teyidi.")
+        fib_4h = st.checkbox("4 saatlik Fibonacci — fiyat seviyeleri", value=True, key="condition_fib_4h", help="4 saatlik kapanmış mumların fiyat aralığındaki Fibonacci seviyesine yakınlık teyidi.")
+        fib_atr = st.slider("Fib yakınlığı (ATR) — seviye toleransı", 0.25, 3.0, 1.0, 0.25, key="condition_fib_atr", help="Fiyatın en yakın uygun Fibonacci seviyesine uzaklığı kaç ATR olabilecek? Düşük değer daha sıkı teyittir.")
     with st.expander("📊 Sinyal eşikleri", expanded=False):
-        adx_min = st.slider("Minimum ADX", 10, 45, 20, key="condition_adx_min")
-        long_rsi = st.slider("LONG RSI aralığı", 0, 100, (45, 68), key="condition_long_rsi")
-        short_rsi = st.slider("SHORT RSI aralığı", 0, 100, (32, 55), key="condition_short_rsi")
-        volume_min = st.slider("Minimum hacim katı", 0.5, 5.0, 1.2, 0.1, key="condition_volume_min")
+        adx_min = st.slider("Minimum ADX — trend gücü eşiği", 10, 45, 20, key="condition_adx_min", help="ADX bu değere eşit veya daha yüksekse trend gücü koşulu geçer.")
+        long_rsi = st.slider("LONG RSI aralığı — alış momentumu", 0, 100, (45, 68), key="condition_long_rsi", help="RSI seçilen iki sınır arasında olmalı; varsayılan 45–68.")
+        short_rsi = st.slider("SHORT RSI aralığı — satış momentumu", 0, 100, (32, 55), key="condition_short_rsi", help="RSI seçilen iki sınır arasında olmalı; varsayılan 32–55.")
+        volume_min = st.slider("Minimum hacim katı — ortalamaya göre", 0.5, 5.0, 1.2, 0.1, key="condition_volume_min", help="1,2 = güncel mumun tahmini hacmi önceki 20 mum ortalamasının en az %120’si.")
     condition_cfg = {"strategy": strategy_mode, "nk_sens": nk_sens, "nk_atr": nk_atr, "enabled": enabled, "fib": {"1h": fib_1h, "4h": fib_4h},
                      "fib_atr": fib_atr, "adx_min": adx_min,
                      "long_rsi": long_rsi, "short_rsi": short_rsi,
