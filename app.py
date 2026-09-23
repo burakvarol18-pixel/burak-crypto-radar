@@ -1,4 +1,4 @@
-"""BURAK CRYPTO RADAR V6.5 — OKX + BIST and read-only OKX account view.
+"""BURAK CRYPTO RADAR V6.6 — OKX + BIST and read-only OKX account view.
 No order placement, cancellation, transfers, or leverage execution.
 """
 import base64
@@ -12,7 +12,7 @@ import plotly.graph_objects as go
 import requests
 import streamlit as st
 
-st.set_page_config(page_title="Burak Crypto Radar V6.5 — OKX + BIST", page_icon="📡", layout="wide")
+st.set_page_config(page_title="Burak Crypto Radar V6.6 — OKX + BIST", page_icon="📡", layout="wide")
 st.markdown("""
 <style>
 @media (max-width: 600px) {
@@ -554,7 +554,7 @@ def okx_derivatives(inst_id):
 
 
 
-st.title("📡 BURAK CRYPTO RADAR V6.5 — OKX + BIST")
+st.title("📡 BURAK CRYPTO RADAR V6.6 — OKX + BIST")
 st.caption("Yalnızca OKX USDT perpetual verileri • LONG / SHORT araştırma sinyalleri • Otomatik emir göndermez")
 with st.sidebar:
     st.header("🎛️ Radar koşulları")
@@ -986,6 +986,23 @@ def paper_equity(state, quotes):
     )
 
 
+def paper_close_position(state, p, price, reason):
+    """Settle a single virtual position at an observed OKX ticker price."""
+    now = datetime.now(timezone.utc)
+    exit_price = price
+        exit_fee = p["notional"] * (price / p["entry"]) * .0005
+        pnl = p["direction"] * p["notional"] * (price / p["entry"] - 1) - p["entry_fee"] - exit_fee
+        state["cash"] += p["margin"] + p["direction"] * p["notional"] * (price / p["entry"] - 1) - exit_fee
+        state["trades"].append({
+            "Parite": p["inst"], "Yön": "LONG" if p["direction"] == 1 else "SHORT",
+            "Strateji": p["strategy"], "Risk/Ödül": p.get("reward_ratio", 2), "Giriş UTC": p["time"], "Çıkış UTC": now.isoformat(timespec="seconds"),
+            "Giriş": p["entry"], "Çıkış": exit_price, "Net P&L (USDT)": round(pnl, 4),
+            "Çıkış nedeni": reason
+        })
+        state["positions"].remove(p)
+    return pnl
+
+
 def paper_check_exits(state, quotes):
     """Check observed prices against virtual stops/targets; never send orders."""
     now = datetime.now(timezone.utc)
@@ -998,18 +1015,7 @@ def paper_check_exits(state, quotes):
         target_hit = price >= p["target"] if p["direction"] == 1 else price <= p["target"]
         if not (stop_hit or target_hit):
             continue
-        # Observed ticker, not assumed stop fill; gap/slippage can exceed planned risk.
-        exit_price = price
-        exit_fee = p["notional"] * (price / p["entry"]) * .0005
-        pnl = p["direction"] * p["notional"] * (price / p["entry"] - 1) - p["entry_fee"] - exit_fee
-        state["cash"] += p["margin"] + p["direction"] * p["notional"] * (price / p["entry"] - 1) - exit_fee
-        state["trades"].append({
-            "Parite": p["inst"], "Yön": "LONG" if p["direction"] == 1 else "SHORT",
-            "Strateji": p["strategy"], "Risk/Ödül": p.get("reward_ratio", 2), "Giriş UTC": p["time"], "Çıkış UTC": now.isoformat(timespec="seconds"),
-            "Giriş": p["entry"], "Çıkış": exit_price, "Net P&L (USDT)": round(pnl, 4),
-            "Çıkış nedeni": "STOP" if stop_hit else "HEDEF"
-        })
-        state["positions"].remove(p)
+        paper_close_position(state, p, price, "STOP" if stop_hit else "HEDEF")
         closed_count += 1
     return closed_count
 
@@ -1121,7 +1127,7 @@ def paper_scan(state, cfg, universe, max_coins, reward_ratio):
 
 
 with paper_tab:
-    st.subheader("🧪 Paper Trading V6.5 — 500 USDT / 5x / seçili strateji")
+    st.subheader("🧪 Paper Trading V6.6 — 500 USDT / 5x / seçili strateji")
     st.warning("Bu bir OTURUM İÇİ simülasyondur: tarayıcı/oturum kapalıyken veya uygulama uyuduğunda otomatik tarama/stop çalışmaz; uygulama yeniden başlarsa kayıtlar silinebilir. 7/24 bot veya güvenilir geçmiş performans testi değildir.")
     st.caption("Gerçek OKX hesabına emir gönderilmez. İşlemler sanal 500 USDT ile, maksimum 5 isolated pozisyon ve işlem başına en fazla 5 USDT brüt planlanan stop riskiyle modellenir. Pozisyon başına teminat en fazla özkaynağın %16’sı, toplam ayrılan teminat en fazla %80’idir.")
     paper_creds = okx_account_secrets()
@@ -1205,6 +1211,28 @@ with paper_tab:
                         "Açık P&L USDT": round(p["direction"] * p["notional"] * (mark / p["entry"] - 1) - p["entry_fee"], 2)
                     })
                 st.dataframe(pd.DataFrame(table), use_container_width=True, hide_index=True)
+                st.markdown("**✋ Sanal pozisyonu manuel kapat**")
+                st.caption("Tam pozisyonu güncel OKX ticker fiyatından sanal olarak kapatır; komisyon düşülür. Gerçek borsaya emir gönderilmez.")
+                for p in list(ps["positions"]):
+                    col_name, col_button = st.columns([3, 1])
+                    col_name.write(f"{p['inst']} · {'LONG' if p['direction'] == 1 else 'SHORT'}")
+                    if col_button.button("Kapat", key=f"paper_close_{p['inst']}_{p['time']}",
+                                         use_container_width=True):
+                        try:
+                            okx_perpetual_universe.clear()
+                            fresh = okx_perpetual_universe()
+                            match = fresh.loc[fresh["Parite"] == p["inst"], "Fiyat ($)"]
+                            if match.empty or float(match.iloc[0]) <= 0:
+                                st.error("Güncel OKX fiyatı alınamadı; pozisyon açık bırakıldı.")
+                            elif p not in ps["positions"]:
+                                st.warning("Bu pozisyon zaten kapanmış.")
+                            else:
+                                exit_price = float(match.iloc[0])
+                                net = paper_close_position(ps, p, exit_price, "MANUEL")
+                                st.toast(f"{p['inst']} sanal kapatıldı · net P&L: {net:+.2f} USDT")
+                                st.rerun()
+                        except (ValueError, KeyError, TypeError, requests.RequestException, RuntimeError):
+                            st.error("OKX fiyatı alınamadı; pozisyon açık bırakıldı.")
             else:
                 st.info("Açık sanal pozisyon yok.")
             if ps["trades"]:
