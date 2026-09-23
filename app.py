@@ -1015,7 +1015,9 @@ def paper_scan(state, cfg, universe, max_coins):
         state["running"] = False
         return "Günlük 15 USDT zarar eşiği görüldü; yeni sanal işlemler durduruldu."
     if not state["running"]:
-        return "Simülasyon duraklatılmış."\n    if state["strategy"] != cfg["strategy"]:\n        return "Strateji değişti. Yeni strateji için sanal oturumu sıfırlayıp yeniden başlat."
+        return "Simülasyon duraklatılmış."
+    if state["strategy"] != cfg["strategy"]:
+        return "Strateji değişti. Yeni strateji için sanal oturumu sıfırlayıp yeniden başlat."
     scanned, errors, opened = 0, 0, 0
     for _, item in universe.head(max_coins).iterrows():
         if len(state["positions"]) >= 2 or state["cash"] < 10:
