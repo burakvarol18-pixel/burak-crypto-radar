@@ -1,4 +1,4 @@
-"""BURAK CRYPTO RADAR V6.1 — OKX + BIST and read-only OKX account view.
+"""BURAK CRYPTO RADAR V6.2 — OKX + BIST and read-only OKX account view.
 No order placement, cancellation, transfers, or leverage execution.
 """
 import base64
@@ -12,7 +12,7 @@ import plotly.graph_objects as go
 import requests
 import streamlit as st
 
-st.set_page_config(page_title="Burak Crypto Radar V6.1 — OKX + BIST", page_icon="📡", layout="wide")
+st.set_page_config(page_title="Burak Crypto Radar V6.2 — OKX + BIST", page_icon="📡", layout="wide")
 st.markdown("""
 <style>
 @media (max-width: 600px) {
@@ -554,7 +554,7 @@ def okx_derivatives(inst_id):
 
 
 
-st.title("📡 BURAK CRYPTO RADAR V6.1 — OKX + BIST")
+st.title("📡 BURAK CRYPTO RADAR V6.2 — OKX + BIST")
 st.caption("Yalnızca OKX USDT perpetual verileri • LONG / SHORT araştırma sinyalleri • Otomatik emir göndermez")
 with st.sidebar:
     st.header("🎛️ Radar koşulları")
@@ -604,7 +604,7 @@ with st.sidebar:
         st.cache_data.clear()
         st.rerun()
 
-mobile_tab, account_tab, radar_tab, whale_tab, market_tab, bist_tab, futures, methodology = st.tabs(["📱 iPhone", "🔐 OKX Hesabım", "🟢🔴 OKX Perpetual Radar", "🐋 OKX Balina / Akıllı Para", "🌍 OKX Piyasa Yönü", "🇹🇷 BIST Radar", "⚠️ Vadeli risk ekranı", "ℹ️ Metodoloji"])
+mobile_tab, account_tab, paper_tab, radar_tab, whale_tab, market_tab, bist_tab, futures, methodology = st.tabs(["📱 iPhone", "🔐 OKX Hesabım", "🧪 Paper Trading", "🟢🔴 OKX Perpetual Radar", "🐋 OKX Balina / Akıllı Para", "🌍 OKX Piyasa Yönü", "🇹🇷 BIST Radar", "⚠️ Vadeli risk ekranı", "ℹ️ Metodoloji"])
 
 def analyze_okx_coin(item, okx_interval, stop_mult, target_mult, cfg):
     inst = item["Parite"]
@@ -960,6 +960,175 @@ with account_tab:
                 st.caption("Koşullu stop/TP emirleri bu ilk sürümün bekleyen emir tablosuna dahil değildir. OKX API verileri anlık değişebilir.")
             except RuntimeError as exc:
                 st.error(str(exc))
+
+
+# V6.2: paper ledger is scoped to the current authenticated Streamlit session.
+# It deliberately has NO API trade permission, durable storage or background worker.
+def paper_state():
+    if "paper_v62" not in st.session_state:
+        st.session_state["paper_v62"] = {
+            "cash": 500., "positions": [], "trades": [], "seen": [],
+            "running": False, "day": "", "day_start": 500., "last_scan": ""
+        }
+    return st.session_state["paper_v62"]
+
+
+def paper_equity(state, quotes):
+    return state["cash"] + sum(
+        p["margin"] + p["direction"] * p["notional"] *
+        (quotes.get(p["inst"], p["entry"]) / p["entry"] - 1)
+        for p in state["positions"]
+    )
+
+
+def paper_scan(state, cfg, universe, max_coins):
+    """One on-demand simulation tick. Closed-bar same-timeframe technical hybrid;
+    no cross-timeframe Fibonacci. No exchange orders."""
+    now = datetime.now(timezone.utc)
+    today = now.strftime("%Y-%m-%d")
+    if state["day"] != today:
+        state["day"], state["day_start"] = today, state["cash"] + sum(p["margin"] for p in state["positions"])
+    quotes = {row["Parite"]: float(row["Fiyat ($)"]) for _, row in universe.iterrows()}
+    # Process existing paper stops/targets before looking for new entries.
+    for p in list(state["positions"]):
+        price = quotes.get(p["inst"])
+        if price is None or price <= 0:
+            continue
+        stop_hit = price <= p["stop"] if p["direction"] == 1 else price >= p["stop"]
+        target_hit = price >= p["target"] if p["direction"] == 1 else price <= p["target"]
+        if not (stop_hit or target_hit):
+            continue
+        # Observed ticker, not assumed stop fill; gap/slippage can exceed planned risk.
+        exit_price = price
+        exit_fee = p["notional"] * (price / p["entry"]) * .0005
+        pnl = p["direction"] * p["notional"] * (price / p["entry"] - 1) - p["entry_fee"] - exit_fee
+        state["cash"] += p["margin"] + p["direction"] * p["notional"] * (price / p["entry"] - 1) - exit_fee
+        state["trades"].append({
+            "Parite": p["inst"], "Yön": "LONG" if p["direction"] == 1 else "SHORT",
+            "Giriş UTC": p["time"], "Çıkış UTC": now.isoformat(timespec="seconds"),
+            "Giriş": p["entry"], "Çıkış": exit_price, "Net P&L (USDT)": round(pnl, 4),
+            "Çıkış nedeni": "STOP" if stop_hit else "HEDEF"
+        })
+        state["positions"].remove(p)
+    equity = paper_equity(state, quotes)
+    if state["day_start"] - equity >= 15:
+        state["running"] = False
+        return "Günlük 15 USDT zarar eşiği görüldü; yeni sanal işlemler durduruldu."
+    if not state["running"]:
+        return "Simülasyon duraklatılmış."
+    scanned, errors, opened = 0, 0, 0
+    for _, item in universe.head(max_coins).iterrows():
+        if len(state["positions"]) >= 2 or state["cash"] < 10:
+            break
+        inst = item["Parite"]
+        if any(p["inst"] == inst for p in state["positions"]):
+            continue
+        try:
+            frame = okx_candles(inst, "1h")
+            closed = frame[frame["confirm"] == "1"].reset_index(drop=True)
+            if len(closed) < 210:
+                continue
+            bar_id = str(closed.iloc[-1]["date"])
+            signal_key = inst + "|" + bar_id
+            if signal_key in state["seen"]:
+                continue
+            states, _ = strategy_states(closed, cfg, cfg["nk_sens"], cfg["nk_atr"])
+            direction = int(states["Hibrit"][-1])
+            state["seen"].append(signal_key)
+            if direction == 0:
+                continue
+            # ATR from last fully closed 1h candle; paper entry at observed ticker.
+            c = closed["close"].astype(float)
+            tr = pd.concat([
+                closed["high"] - closed["low"],
+                (closed["high"] - c.shift()).abs(),
+                (closed["low"] - c.shift()).abs()
+            ], axis=1).max(axis=1)
+            atr = float(tr.ewm(alpha=1/14, adjust=False).mean().iloc[-1])
+            price = float(item["Fiyat ($)"])
+            if not np.isfinite(atr) or atr <= 0 or price <= 0:
+                continue
+            stop = price - direction * 1.5 * atr
+            target = price + direction * 3.0 * atr
+            if stop <= 0 or target <= 0:
+                continue
+            stop_fraction = 1.5 * atr / price
+            # Plan 5 USDT gross stop risk; cap by remaining isolated margin.
+            notional = min(5. / stop_fraction, state["cash"] * 5 * .45)
+            margin = notional / 5
+            entry_fee = notional * .0005
+            if margin + entry_fee > state["cash"] or notional < 10:
+                continue
+            state["cash"] -= margin + entry_fee
+            state["positions"].append({
+                "inst": inst, "direction": direction, "entry": price,
+                "stop": stop, "target": target, "notional": notional,
+                "margin": margin, "entry_fee": entry_fee,
+                "time": now.isoformat(timespec="seconds"), "bar": bar_id
+            })
+            opened += 1
+            scanned += 1
+        except (ValueError, KeyError, TypeError, IndexError, requests.RequestException):
+            errors += 1
+            continue
+    state["seen"] = state["seen"][-1500:]
+    state["last_scan"] = now.isoformat(timespec="seconds")
+    return f"Tarama tamamlandı: {max_coins} hacimli pariteye kadar kontrol; {opened} yeni sanal pozisyon; {errors} veri/analiz hatası."
+
+
+with paper_tab:
+    st.subheader("🧪 Paper Trading V6.2 — 500 USDT / 5x / Hibrit")
+    st.warning("Bu bir OTURUM İÇİ simülasyondur: sekme kapalıyken tarama/stop çalışmaz; uygulama yeniden başlarsa kayıtlar silinebilir. 7/24 bot veya güvenilir geçmiş performans testi değildir.")
+    st.caption("Gerçek OKX hesabına emir gönderilmez. İşlemler sanal 500 USDT ile, maksimum 2 isolated pozisyon ve işlem başına 5 USDT brüt planlanan stop riskiyle modellenir.")
+    paper_creds = okx_account_secrets()
+    if not paper_creds.get("dashboard_password") or not st.session_state.get("okx_account_unlocked", False):
+        st.info("Bu sekme için önce 🔐 OKX Hesabım bölümünde panel şifrenle giriş yap.")
+    else:
+        ps = paper_state()
+        if st.button("▶️ Sanal botu başlat / duraklat", use_container_width=True, key="paper_toggle"):
+            ps["running"] = not ps["running"]
+            st.rerun()
+        st.write("Durum:", "🟢 Çalışıyor (yalnızca açık sayfada)" if ps["running"] else "⏸️ Duraklatıldı")
+        scan_count = st.select_slider("Her turda hacme göre taranacak coin", [10, 20, 30, 40, 50, 60], value=30,
+                                      help="V6.2 prototipi bütün OKX coinlerini taramaz; ilk 60'a kadar seçilebilir.")
+        if st.button("🔎 Sanal tarama + stop/hedef kontrolü", type="primary", use_container_width=True):
+            try:
+                with st.spinner("OKX kapanmış mumları kontrol ediliyor..."):
+                    pu = okx_perpetual_universe()
+                    message = paper_scan(ps, condition_cfg, pu, scan_count)
+                st.info(message)
+            except (ValueError, requests.RequestException, KeyError) as exc:
+                st.error(f"Tarama başarısız: {type(exc).__name__}")
+        st.caption("Hibrit teyidi aynı kapanmış 1H mumda NKRAL1 + teknik radar eşleşmesidir. Bu ilk simülasyonda 1H/4H Fibonacci teyitleri uygulanmaz; canlı radarın tam kopyası değildir.")
+        try:
+            current_quotes = {r["Parite"]: float(r["Fiyat ($)"]) for _, r in okx_perpetual_universe().iterrows()}
+        except (ValueError, requests.RequestException, KeyError):
+            current_quotes = {}
+        eq = paper_equity(ps, current_quotes)
+        a, b, c = st.columns(3)
+        a.metric("Sanal özkaynak", f"{eq:,.2f} USDT")
+        b.metric("Sanal nakit", f"{ps['cash']:,.2f} USDT")
+        c.metric("Açık pozisyon", f"{len(ps['positions'])}/2")
+        if ps["positions"]:
+            table = []
+            for p in ps["positions"]:
+                mark = current_quotes.get(p["inst"], p["entry"])
+                table.append({
+                    "Parite": p["inst"], "Yön": "LONG" if p["direction"] == 1 else "SHORT",
+                    "Giriş": p["entry"], "Gözlenen fiyat": mark,
+                    "Stop": p["stop"], "Hedef": p["target"],
+                    "Teminat USDT": round(p["margin"], 2),
+                    "Açık P&L USDT": round(p["direction"] * p["notional"] * (mark / p["entry"] - 1) - p["entry_fee"], 2)
+                })
+            st.dataframe(pd.DataFrame(table), use_container_width=True, hide_index=True)
+        else:
+            st.info("Açık sanal pozisyon yok.")
+        if ps["trades"]:
+            history = pd.DataFrame(ps["trades"])
+            st.dataframe(history.iloc[::-1], use_container_width=True, hide_index=True)
+            st.download_button("📥 İşlem geçmişini CSV indir", history.to_csv(index=False).encode("utf-8-sig"),
+                               "burak_paper_trades.csv", "text/csv")
+        st.caption("Her giriş ve çıkışta varsayımsal %0,05 komisyon kullanılır; fonlama, spread, kayma ve likidasyon modellenmez. Stop/hedef yalnızca tarama düğmesine basıldığında gözlenen ticker fiyatıyla kontrol edilir.")
 
 
 # The whale tab uses only public OKX market aggregates, never private wallets.
