@@ -1,4 +1,4 @@
-"""BURAK CRYPTO RADAR V6.4 — OKX + BIST and read-only OKX account view.
+"""BURAK CRYPTO RADAR V6.5 — OKX + BIST and read-only OKX account view.
 No order placement, cancellation, transfers, or leverage execution.
 """
 import base64
@@ -12,7 +12,7 @@ import plotly.graph_objects as go
 import requests
 import streamlit as st
 
-st.set_page_config(page_title="Burak Crypto Radar V6.4 — OKX + BIST", page_icon="📡", layout="wide")
+st.set_page_config(page_title="Burak Crypto Radar V6.5 — OKX + BIST", page_icon="📡", layout="wide")
 st.markdown("""
 <style>
 @media (max-width: 600px) {
@@ -554,7 +554,7 @@ def okx_derivatives(inst_id):
 
 
 
-st.title("📡 BURAK CRYPTO RADAR V6.4 — OKX + BIST")
+st.title("📡 BURAK CRYPTO RADAR V6.5 — OKX + BIST")
 st.caption("Yalnızca OKX USDT perpetual verileri • LONG / SHORT araştırma sinyalleri • Otomatik emir göndermez")
 with st.sidebar:
     st.header("🎛️ Radar koşulları")
@@ -986,15 +986,10 @@ def paper_equity(state, quotes):
     )
 
 
-def paper_scan(state, cfg, universe, max_coins, reward_ratio):
-    """One on-demand simulation tick. Closed-bar same-timeframe technical hybrid;
-    with cross-timeframe Fibonacci. No exchange orders."""
+def paper_check_exits(state, quotes):
+    """Check observed prices against virtual stops/targets; never send orders."""
     now = datetime.now(timezone.utc)
-    today = now.strftime("%Y-%m-%d")
-    if state["day"] != today:
-        state["day"], state["day_start"] = today, state["cash"] + sum(p["margin"] for p in state["positions"])
-    quotes = {row["Parite"]: float(row["Fiyat ($)"]) for _, row in universe.iterrows()}
-    # Process existing paper stops/targets before looking for new entries.
+    closed_count = 0
     for p in list(state["positions"]):
         price = quotes.get(p["inst"])
         if price is None or price <= 0:
@@ -1015,6 +1010,19 @@ def paper_scan(state, cfg, universe, max_coins, reward_ratio):
             "Çıkış nedeni": "STOP" if stop_hit else "HEDEF"
         })
         state["positions"].remove(p)
+        closed_count += 1
+    return closed_count
+
+
+def paper_scan(state, cfg, universe, max_coins, reward_ratio):
+    """One on-demand simulation tick. Closed-bar same-timeframe technical hybrid;
+    with cross-timeframe Fibonacci. No exchange orders."""
+    now = datetime.now(timezone.utc)
+    today = now.strftime("%Y-%m-%d")
+    if state["day"] != today:
+        state["day"], state["day_start"] = today, state["cash"] + sum(p["margin"] for p in state["positions"])
+    quotes = {row["Parite"]: float(row["Fiyat ($)"]) for _, row in universe.iterrows()}
+    paper_check_exits(state, quotes)
     equity = paper_equity(state, quotes)
     if state["day_start"] - equity >= 15:
         state["running"] = False
@@ -1113,8 +1121,8 @@ def paper_scan(state, cfg, universe, max_coins, reward_ratio):
 
 
 with paper_tab:
-    st.subheader("🧪 Paper Trading V6.4 — 500 USDT / 5x / seçili strateji")
-    st.warning("Bu bir OTURUM İÇİ simülasyondur: sekme kapalıyken tarama/stop çalışmaz; uygulama yeniden başlarsa kayıtlar silinebilir. 7/24 bot veya güvenilir geçmiş performans testi değildir.")
+    st.subheader("🧪 Paper Trading V6.5 — 500 USDT / 5x / seçili strateji")
+    st.warning("Bu bir OTURUM İÇİ simülasyondur: tarayıcı/oturum kapalıyken veya uygulama uyuduğunda otomatik tarama/stop çalışmaz; uygulama yeniden başlarsa kayıtlar silinebilir. 7/24 bot veya güvenilir geçmiş performans testi değildir.")
     st.caption("Gerçek OKX hesabına emir gönderilmez. İşlemler sanal 500 USDT ile, maksimum 5 isolated pozisyon ve işlem başına en fazla 5 USDT brüt planlanan stop riskiyle modellenir. Pozisyon başına teminat en fazla özkaynağın %16’sı, toplam ayrılan teminat en fazla %80’idir.")
     paper_creds = okx_account_secrets()
     if not paper_creds.get("dashboard_password") or not st.session_state.get("okx_account_unlocked", False):
@@ -1137,7 +1145,7 @@ with paper_tab:
             if st.button("Sanal oturumu sıfırla", key="paper_reset"):
                 del st.session_state["paper_v62"]
                 st.rerun()
-        st.write("Durum:", "🟢 Çalışıyor (yalnızca açık sayfada)" if ps["running"] else "⏸️ Duraklatıldı")
+        st.write("Durum:", "🟢 Etkin (sayfa açıkken otomatik kontrol)" if ps["running"] else "⏸️ Duraklatıldı")
         reward_ratio = st.selectbox("Risk / Ödül oranı", [2, 3, 4, 5],
                                     format_func=lambda x: f"1:{x}", index=0,
                                     key="paper_reward_ratio",
@@ -1154,10 +1162,32 @@ with paper_tab:
             except (ValueError, requests.RequestException, KeyError) as exc:
                 st.error(f"Tarama başarısız: {type(exc).__name__}")
         st.caption("Mevcut Radar: seçili teknik + 1H/4H Fibonacci teyitleri. NKRAL1: kapanmış mum kesişimi. Hibrit: aynı kapanmış 1H mumda NKRAL1 + teknik/Fibonacci teyidi. Canlı radar açık mum kullandığından anlık sinyaller farklı olabilir.")
-        try:
-            current_quotes = {r["Parite"]: float(r["Fiyat ($)"]) for _, r in okx_perpetual_universe().iterrows()}
-        except (ValueError, requests.RequestException, KeyError):
-            current_quotes = {}
+        @st.fragment(run_every="10s")
+        def paper_live_monitor():
+            """UI-bound refresh only; stops when the client/session stops."""
+            try:
+                live_universe = okx_perpetual_universe()
+                current_quotes = {r["Parite"]: float(r["Fiyat ($)"])
+                                  for _, r in live_universe.iterrows()}
+            except (ValueError, requests.RequestException, KeyError, RuntimeError) as exc:
+                current_quotes = {}
+                st.warning("OKX fiyatları güncellenemedi; son bilinen fiyatlar kullanılıyor.")
+            if ps["running"] and current_quotes:
+                closed_count = paper_check_exits(ps, current_quotes)
+                if closed_count:
+                    st.success(f"{closed_count} sanal pozisyon stop/hedef nedeniyle kapatıldı.")
+                # New 1H bar: scan once per hour while the browser session is alive.
+                hour_key = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H")
+                if ps.get("last_auto_hour") != hour_key:
+                    try:
+                        result = paper_scan(ps, condition_cfg, live_universe,
+                                            scan_count, reward_ratio)
+                        ps["last_auto_hour"] = hour_key
+                        st.info("Otomatik 1H tarama: " + result)
+                    except (ValueError, requests.RequestException, KeyError, RuntimeError) as exc:
+                        st.warning(f"Otomatik tarama tamamlanamadı: {type(exc).__name__}. Sonraki yenilemede tekrar denenecek.")
+            st.caption("Son ekran kontrolü: " + datetime.now(timezone.utc).strftime("%H:%M:%S UTC") +
+                       " · OKX ticker önbelleği 15 sn · ekran kontrolü yaklaşık 10 sn.")
         eq = paper_equity(ps, current_quotes)
         a, b, c = st.columns(3)
         a.metric("Sanal özkaynak", f"{eq:,.2f} USDT")
@@ -1182,7 +1212,8 @@ with paper_tab:
             st.dataframe(history.iloc[::-1], use_container_width=True, hide_index=True)
             st.download_button("📥 İşlem geçmişini CSV indir", history.to_csv(index=False).encode("utf-8-sig"),
                                "burak_paper_trades.csv", "text/csv")
-        st.caption("Her giriş ve çıkışta varsayımsal %0,05 komisyon kullanılır; fonlama, spread, kayma ve likidasyon modellenmez. Stop/hedef yalnızca tarama düğmesine basıldığında gözlenen ticker fiyatıyla kontrol edilir.")
+        paper_live_monitor()
+        st.caption("Her giriş ve çıkışta varsayımsal %0,05 komisyon kullanılır; fonlama, spread, kayma ve likidasyon modellenmez. Stop/hedef açık oturumda yaklaşık 10 saniyede bir kontrol edilir (OKX ticker önbelleği 15 saniye); mum sinyali saatlik taranır. Kontroller arasında stop geçişleri kaçabilir.")
 
 
 # The whale tab uses only public OKX market aggregates, never private wallets.
