@@ -1174,7 +1174,7 @@ def paper_scan(state, cfg, universe, max_coins, reward_ratio, max_positions=5, a
 with paper_tab:
     st.subheader("🧪 Paper Trading V7.0 — 500 USDT / 5x / seçili strateji")
     st.warning("Bu bir OTURUM İÇİ simülasyondur: tarayıcı/oturum kapalıyken veya uygulama uyuduğunda otomatik tarama/stop çalışmaz; uygulama yeniden başlarsa kayıtlar silinebilir. 7/24 bot veya güvenilir geçmiş performans testi değildir.")
-    st.caption("Gerçek OKX hesabına emir gönderilmez. İşlemler sanal 500 USDT ile, seçilebilir maksimum 5–50 isolated pozisyon ve işlem başına en fazla 5 USDT brüt planlanan stop riskiyle modellenir. Pozisyon başına teminat üst sınırı seçilen pozisyon sayısına göre düşürülür; toplam ayrılan teminat en fazla özkaynağın %80’idir.")
+    st.caption("Gerçek OKX hesabına emir gönderilmez. İşlemler sanal 500 USDT ile, seçilebilir maksimum 1–50 isolated pozisyon ve işlem başına en fazla 5 USDT brüt planlanan stop riskiyle modellenir. Pozisyon başına teminat üst sınırı seçilen pozisyon sayısına göre düşürülür; toplam ayrılan teminat en fazla özkaynağın %80’idir.")
     paper_creds = okx_account_secrets()
     if not paper_creds.get("dashboard_password") or not st.session_state.get("okx_account_unlocked", False):
         st.info("Bu sekme için önce 🔐 OKX Hesabım bölümünde panel şifrenle giriş yap.")
@@ -1235,8 +1235,8 @@ with paper_tab:
                                     help="Stop 1,5 ATR sabit; hedef oran × 1,5 ATR. Açık işlemlerin hedefi değişmez.")
         max_positions = st.selectbox(
             "📂 Maksimum eşzamanlı açık pozisyon",
-            [5, 10, 15, 20, 25, 30, 40, 50],
-            index=0, key="paper_max_positions",
+            list(range(1, 51)),
+            index=4, key="paper_max_positions",
             help="Yalnızca yeni pozisyon açma sınırını belirler. Mevcut pozisyonları kapatmaz. Toplam teminat limiti %80 olarak kalır."
         )
         st.caption(f"Yeni sanal işlemler: stop 1,5 ATR · hedef {1.5 * reward_ratio:g} ATR · en fazla {max_positions} açık pozisyon. Pozisyon başına azami teminat: %{min(16, 80 / max_positions):g}.")
