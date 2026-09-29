@@ -1022,6 +1022,29 @@ def paper_state():
         position.setdefault("strategy", "Hibrit (V6.2)")
     return state
 
+def paper_bot_config_request(method, payload=None):
+    """Shared V8 worker configuration in Supabase; secret remains server-side."""
+    cfg = st.secrets.get("supabase", {})
+    url = str(cfg.get("url", "")).strip().rstrip("/")
+    key = str(cfg.get("secret_key", "")).strip()
+    headers = {"apikey": key, "Authorization": "Bearer " + key, "Content-Type": "application/json"}
+    if method == "POST":
+        headers["Prefer"] = "resolution=merge-duplicates,return=minimal"
+    r = requests.request(method, url + "/rest/v1/paper_bot_config", headers=headers,
+                         params={"account_id": "eq.burak_paper_main"} if method == "GET" else {"on_conflict": "account_id"},
+                         json=payload, timeout=15)
+    r.raise_for_status()
+    return r.json() if method == "GET" else None
+
+def paper_bot_config_load():
+    rows = paper_bot_config_request("GET")
+    return rows[0] if rows else None
+
+def paper_bot_config_save(config):
+    row = {"account_id": "burak_paper_main", **config,
+           "updated_at": datetime.now(timezone.utc).isoformat(timespec="seconds")}
+    paper_bot_config_request("POST", [row])
+
 
 def paper_equity(state, quotes):
     return state["cash"] + sum(
@@ -1172,179 +1195,82 @@ def paper_scan(state, cfg, universe, max_coins, reward_ratio, max_positions=5, a
 
 
 with paper_tab:
-    st.subheader("🧪 Paper Trading V7.0 — 500 USDT / 5x / seçili strateji")
-    st.warning("Bu bir OTURUM İÇİ simülasyondur: tarayıcı/oturum kapalıyken veya uygulama uyuduğunda otomatik tarama/stop çalışmaz; uygulama yeniden başlarsa kayıtlar silinebilir. 7/24 bot veya güvenilir geçmiş performans testi değildir.")
-    st.caption("Gerçek OKX hesabına emir gönderilmez. İşlemler sanal 500 USDT ile, seçilebilir maksimum 1–50 isolated pozisyon ve işlem başına en fazla 5 USDT brüt planlanan stop riskiyle modellenir. Pozisyon başına teminat üst sınırı seçilen pozisyon sayısına göre düşürülür; toplam ayrılan teminat en fazla özkaynağın %80’idir.")
+    st.subheader("🧪 Paper Trading V8.0 — 7/24 Render Worker")
+    st.caption("Render worker 5 dakikada bir bağımsız çalışır; bilgisayarın ve Streamlit kapalı olsa da Supabase'deki sanal hesabı yönetir. Gerçek OKX emri göndermez.")
     paper_creds = okx_account_secrets()
     if not paper_creds.get("dashboard_password") or not st.session_state.get("okx_account_unlocked", False):
         st.info("Bu sekme için önce 🔐 OKX Hesabım bölümünde panel şifrenle giriş yap.")
     else:
-        if not st.session_state.get("paper_db_loaded", False):
-            try:
+        try:
+            if not st.session_state.get("paper_db_loaded", False):
                 saved = paper_db_load()
-                if saved is None:
-                    paper_db_save(paper_state())
-                else:
-                    st.session_state["paper_v62"] = saved
+                if saved is not None: st.session_state["paper_v62"] = saved
                 st.session_state["paper_db_loaded"] = True
-            except (RuntimeError, ValueError, requests.RequestException) as exc:
-                st.error("Supabase bağlantısı kurulamadı; veri kaybını önlemek için sanal işlem durduruldu: " + str(exc))
-                st.stop()
-        ps = paper_state()
-        st.caption("☁️ Supabase kalıcı hafıza etkin · Yeniden açılan oturumda otomatik tarama duraklatılır.")
-        st.write("Sol menüde seçilen strateji:", strategy_mode)
-        if ps["strategy"] is not None and ps["strategy"] != strategy_mode:
-            st.warning("Sanal oturum " + ps["strategy"] + " ile açıldı. Yeni strateji için oturumu sıfırla.")
-        paper_mode = st.radio(
-            "🔎 Sanal tarama modu",
-            ["Manuel tarama", "Otomatik tarama (5 dakikada bir)"],
-            horizontal=True, key="paper_scan_mode",
-            help="Manuel modda yeni işlem yalnızca tarama butonuyla aranır. Otomatik modda Başlat butonu gerekir."
-        )
-        if paper_mode == "Manuel tarama":
-            ps["running"] = False
-            st.info("Manuel mod: yalnızca 🔎 Sanal tarama butonuna bastığında sinyal, stop ve hedef kontrolü yapılır.")
-        else:
-            if st.button("⏸️ Otomatik taramayı duraklat" if ps["running"]
-                         else "▶️ Otomatik taramayı başlat (5 dk)",
-                         use_container_width=True, key="paper_toggle"):
-                if ps["strategy"] is None:
-                    ps["strategy"] = strategy_mode
-                if ps["strategy"] != strategy_mode:
-                    st.error("Önce sanal oturumu sıfırla veya önceki stratejiyi seç.")
-                else:
-                    ps["running"] = not ps["running"]
-                    if ps["running"]:
-                        ps["last_auto_scan_ts"] = 0.
-                    st.rerun()
-            st.write("Otomatik durum:", "🟢 Aktif · 5 dakikada bir" if ps["running"]
-                     else "⏸️ Duraklatıldı")
-        with st.expander("🗑️ Sanal oturumu sıfırla / strateji değiştir"):
-            st.caption("Sanal bakiye, açık pozisyonlar ve işlem geçmişi silinir. Önce CSV indirebilirsin.")
-            if st.button("Sanal oturumu sıfırla", key="paper_reset"):
-                try:
-                    fresh_state = paper_default_state()
-                    paper_db_save(fresh_state)
-                    st.session_state["paper_v62"] = fresh_state
-                    st.rerun()
-                except (RuntimeError, ValueError, requests.RequestException) as exc:
-                    st.error("Sıfırlama kaydedilemedi; eski kayıt korundu: " + str(exc))
-        reward_ratio = st.selectbox("Risk / Ödül oranı", [2, 3, 4, 5],
-                                    format_func=lambda x: f"1:{x}", index=0,
-                                    key="paper_reward_ratio",
-                                    help="Stop 1,5 ATR sabit; hedef oran × 1,5 ATR. Açık işlemlerin hedefi değişmez.")
-        max_positions = st.selectbox(
-            "📂 Maksimum eşzamanlı açık pozisyon",
-            list(range(1, 51)),
-            index=4, key="paper_max_positions",
-            help="Yalnızca yeni pozisyon açma sınırını belirler. Mevcut pozisyonları kapatmaz. Toplam teminat limiti %80 olarak kalır."
-        )
-        st.caption(f"Yeni sanal işlemler: stop 1,5 ATR · hedef {1.5 * reward_ratio:g} ATR · en fazla {max_positions} açık pozisyon. Pozisyon başına azami teminat: %{min(16, 80 / max_positions):g}.")
-        scan_count = st.select_slider("Her turda hacme göre taranacak coin", [10, 20, 30, 40, 50, 60], value=30,
-                                      help="V6.2 prototipi bütün OKX coinlerini taramaz; ilk 60'a kadar seçilebilir.")
-        if st.button("🔎 Sanal tarama + stop/hedef kontrolü", type="primary", use_container_width=True):
-            try:
-                with st.spinner("OKX kapanmış mumları kontrol ediliyor..."):
-                    pu = okx_perpetual_universe()
-                    if ps["strategy"] is None:
-                        ps["strategy"] = strategy_mode
-                    message = paper_scan(ps, condition_cfg, pu, scan_count, reward_ratio,
-                                         max_positions=max_positions, allow_manual=(paper_mode == "Manuel tarama"))
-                paper_db_save(ps)
-                st.info(message)
-            except (ValueError, requests.RequestException, KeyError, RuntimeError) as exc:
-                st.error(f"Tarama başarısız: {type(exc).__name__}")
-        st.caption("Mevcut Radar: seçili teknik + 1H/4H Fibonacci teyitleri. NKRAL1: kapanmış mum kesişimi. Hibrit: aynı kapanmış 1H mumda NKRAL1 + teknik/Fibonacci teyidi. Canlı radar açık mum kullandığından anlık sinyaller farklı olabilir.")
-        @st.fragment(run_every="10s")
-        def paper_live_monitor():
-            """UI-bound refresh only; stops when the client/session stops."""
-            try:
-                live_universe = okx_perpetual_universe()
-                current_quotes = {r["Parite"]: float(r["Fiyat ($)"])
-                                  for _, r in live_universe.iterrows()}
-            except (ValueError, requests.RequestException, KeyError, RuntimeError) as exc:
-                current_quotes = {}
-                st.warning("OKX fiyatları güncellenemedi; son bilinen fiyatlar kullanılıyor.")
-            if paper_mode == "Otomatik tarama (5 dakikada bir)" and ps["running"] and current_quotes:
-                closed_count = paper_check_exits(ps, current_quotes)
-                if closed_count:
-                    st.success(f"{closed_count} sanal pozisyon stop/hedef nedeniyle kapatıldı.")
-                # Scan on activation, then at 300-second intervals while the UI session is alive.
-                now_ts = datetime.now(timezone.utc).timestamp()
-                elapsed = now_ts - float(ps.get("last_auto_scan_ts", 0))
-                if elapsed >= 300:
-                    try:
-                        result = paper_scan(ps, condition_cfg, live_universe,
-                                            scan_count, reward_ratio, max_positions=max_positions)
-                        ps["last_auto_scan_ts"] = now_ts
-                        st.info("Otomatik 5 dk tarama: " + result)
-                    except (ValueError, requests.RequestException, KeyError, RuntimeError) as exc:
-                        st.warning(f"Otomatik tarama tamamlanamadı: {type(exc).__name__}. Sonraki yenilemede tekrar denenecek.")
-                if ps["running"] and ps.get("last_auto_scan_ts", 0):
-                    remaining = max(0, 300 - (datetime.now(timezone.utc).timestamp() -
-                                               ps["last_auto_scan_ts"]))
-                    st.caption(f"Sonraki otomatik taramaya yaklaşık {remaining:.0f} saniye.")
-            import json
-            try:
-                fingerprint = json.dumps(ps, sort_keys=True, allow_nan=False)
-                if st.session_state.get("paper_db_last_saved") != fingerprint:
-                    paper_db_save(ps)
-                    st.session_state["paper_db_last_saved"] = fingerprint
-            except (RuntimeError, ValueError, requests.RequestException) as exc:
-                ps["running"] = False
-                st.error("☁️ Kayıt başarısız; otomatik tarama durduruldu: " + str(exc))
-            st.caption("Son ekran kontrolü: " + datetime.now(timezone.utc).strftime("%H:%M:%S UTC") +
-                       " · OKX ticker önbelleği 15 sn · ekran kontrolü yaklaşık 10 sn.")
-            eq = paper_equity(ps, current_quotes)
-            a, b, c = st.columns(3)
-            a.metric("Sanal özkaynak", f"{eq:,.2f} USDT")
-            b.metric("Sanal nakit", f"{ps['cash']:,.2f} USDT")
-            c.metric("Açık pozisyon", f"{len(ps['positions'])}/{max_positions}")
-            if ps["positions"]:
-                st.markdown("**📂 Açık sanal pozisyonlar**")
-                st.caption("Her kart yalnızca kendi pozisyonunu kapatır. Kapatma tam miktar ve güncel OKX ticker fiyatı üzerinden sanaldır.")
-                for p in list(ps["positions"]):
-                    mark = current_quotes.get(p["inst"], p["entry"])
-                    pnl = p["direction"] * p["notional"] * (mark / p["entry"] - 1) - p["entry_fee"]
-                    side = "🟢 LONG" if p["direction"] == 1 else "🔴 SHORT"
-                    with st.container(border=True):
-                        st.markdown(f"**{p['inst']} · {side}**")
-                        x1, x2, x3 = st.columns(3)
-                        x1.metric("Giriş", f"{p['entry']:,.6g} USDT")
-                        x2.metric("Gözlenen fiyat", f"{mark:,.6g} USDT")
-                        x3.metric("Açık net P&L (tahmini)", f"{pnl:+,.2f} USDT")
-                        y1, y2, y3 = st.columns(3)
-                        y1.caption(f"Stop: {p['stop']:,.6g}")
-                        y2.caption(f"Hedef: {p['target']:,.6g}")
-                        y3.caption(f"Teminat: {p['margin']:,.2f} USDT · R/Ö 1:{p.get('reward_ratio', 2)}")
-                        if st.button(f"✋ Yalnızca {p['inst']} pozisyonunu kapat",
-                                     key=f"paper_close_{p['inst']}_{p['time']}",
-                                     use_container_width=True):
-                            try:
-                                okx_perpetual_universe.clear()
-                                fresh = okx_perpetual_universe()
-                                match = fresh.loc[fresh["Parite"] == p["inst"], "Fiyat ($)"]
-                                if match.empty or float(match.iloc[0]) <= 0:
-                                    st.error("Güncel OKX fiyatı alınamadı; pozisyon açık bırakıldı.")
-                                elif p not in ps["positions"]:
-                                    st.warning("Bu pozisyon zaten kapanmış.")
-                                else:
-                                    exit_price = float(match.iloc[0])
-                                    net = paper_close_position(ps, p, exit_price, "MANUEL")
-                                    st.toast(f"{p['inst']} sanal kapatıldı · net P&L: {net:+.2f} USDT")
-                                    paper_db_save(ps)
-                                    st.rerun()
-                            except (ValueError, KeyError, TypeError, requests.RequestException, RuntimeError):
-                                st.error("OKX fiyatı alınamadı; pozisyon açık bırakıldı.")
+            ps = paper_state()
+            bot = paper_bot_config_load()
+            if bot is None:
+                st.error("V8 kontrol tablosu henüz Supabase'de oluşturulmadı. Aşağıdaki SQL kurulumunu bir kez çalıştır.")
+                st.code("""create table if not exists public.paper_bot_config (
+ account_id text primary key,
+ enabled boolean not null default true,
+ strategy text not null default 'NKRAL1',
+ reward_ratio integer not null default 2 check (reward_ratio between 2 and 5),
+ max_positions integer not null default 5 check (max_positions between 1 and 50),
+ scan_count integer not null default 30 check (scan_count between 1 and 60),
+ nk_sens double precision not null default 1.0,
+ nk_atr integer not null default 10,
+ last_run_at timestamptz,
+ last_status text,
+ last_message text,
+ updated_at timestamptz not null default now()
+);
+alter table public.paper_bot_config enable row level security;
+revoke all on public.paper_bot_config from anon, authenticated;
+insert into public.paper_bot_config(account_id) values ('burak_paper_main')
+on conflict (account_id) do nothing;""", language="sql")
             else:
-                st.info("Açık sanal pozisyon yok.")
-            if ps["trades"]:
-                history = pd.DataFrame(ps["trades"])
-                st.dataframe(history.iloc[::-1], use_container_width=True, hide_index=True)
-                st.download_button("📥 İşlem geçmişini CSV indir", history.to_csv(index=False).encode("utf-8-sig"),
-                                   "burak_paper_trades.csv", "text/csv")
-        paper_live_monitor()
-        st.caption("Her giriş ve çıkışta varsayımsal %0,05 komisyon kullanılır; fonlama, spread, kayma ve likidasyon modellenmez. Otomatik mod aktifken stop/hedef açık oturumda yaklaşık 10 saniyede bir kontrol edilir (OKX ticker önbelleği 15 saniye), yeni sinyal 5 dakikada bir taranır. Manuel modda kontrol yalnızca tarama butonuyla yapılır. Kontroller arasında stop geçişleri kaçabilir.")
+                st.success("🟢 7/24 worker açık" if bot["enabled"] else "⏸️ 7/24 worker duraklatıldı")
+                last = bot.get("last_run_at")
+                st.caption("Son worker çalışması: " + (str(last) if last else "henüz kaydedilmedi") +
+                           " · Durum: " + str(bot.get("last_status") or "—") +
+                           " · " + str(bot.get("last_message") or ""))
+                enabled = st.toggle("7/24 Paper Bot", value=bool(bot["enabled"]))
+                rr = st.selectbox("Risk / Ödül", [2,3,4,5], index=[2,3,4,5].index(int(bot["reward_ratio"])),
+                                  format_func=lambda x:f"1:{x}")
+                mp = st.selectbox("📂 Maksimum açık pozisyon", list(range(1,51)),
+                                  index=max(0,min(49,int(bot["max_positions"])-1)))
+                sc = st.select_slider("Hacme göre taranacak coin", [10,20,30,40,50,60],
+                                      value=int(bot["scan_count"]) if int(bot["scan_count"]) in [10,20,30,40,50,60] else 30)
+                c1,c2 = st.columns(2)
+                sens = c1.number_input("NKRAL hassasiyet", .1, 10., float(bot.get("nk_sens",1.)), .1)
+                atrp = c2.number_input("NKRAL ATR periyodu", 1, 100, int(bot.get("nk_atr",10)), 1)
+                st.caption("V8.0 7/24 worker şu aşamada NKRAL1 kullanır. Stop 1,5 ATR · 5x · işlem başına azami 5 USDT brüt stop riski · toplam teminat üst sınırı %80.")
+                if st.button("💾 7/24 ayarlarını kaydet", type="primary", use_container_width=True):
+                    paper_bot_config_save({"enabled":enabled,"strategy":"NKRAL1","reward_ratio":rr,
+                                           "max_positions":mp,"scan_count":sc,"nk_sens":sens,"nk_atr":atrp,
+                                           "last_run_at":bot.get("last_run_at"),"last_status":bot.get("last_status"),
+                                           "last_message":bot.get("last_message")})
+                    st.success("Ayarlar Supabase'e kaydedildi; sonraki Render turunda uygulanacak.")
+                    st.rerun()
+                try:
+                    live = okx_perpetual_universe()
+                    quotes = {r["Parite"]:float(r["Fiyat ($)"]) for _,r in live.iterrows()}
+                except Exception: quotes={}
+                eq=paper_equity(ps,quotes)
+                a1,a2,a3=st.columns(3);a1.metric("Sanal özkaynak",f"{eq:,.2f} USDT");a2.metric("Sanal nakit",f"{ps['cash']:,.2f} USDT");a3.metric("Açık pozisyon",f"{len(ps['positions'])}/{mp}")
+                if ps["positions"]:
+                    for p in ps["positions"]:
+                        mark=quotes.get(p["inst"],p["entry"]); pnl=p["direction"]*p["notional"]*(mark/p["entry"]-1)-p["entry_fee"]
+                        with st.container(border=True):
+                            st.markdown(f"**{p['inst']} · {'🟢 LONG' if p['direction']==1 else '🔴 SHORT'}**")
+                            st.write(f"Giriş: {p['entry']:,.6g} · Fiyat: {mark:,.6g} · Stop: {p['stop']:,.6g} · Hedef: {p['target']:,.6g} · P&L: {pnl:+,.2f} USDT")
+                else: st.info("Açık sanal pozisyon yok.")
+                if ps["trades"]:
+                    hist=pd.DataFrame(ps["trades"]);st.dataframe(hist.iloc[::-1],use_container_width=True,hide_index=True)
+                    st.download_button("📥 İşlem geçmişini CSV indir",hist.to_csv(index=False).encode("utf-8-sig"),"burak_paper_trades.csv","text/csv")
+                st.warning("V8 worker 5 dakikalık anlık fiyat örnekleriyle stop/hedef kontrol eder; iki kontrol arasında seviyeye dokunup geri dönen fiyatı kaçırabilir.")
+        except (RuntimeError, ValueError, KeyError, requests.RequestException) as exc:
+            st.error("V8 Paper kontrol paneli yüklenemedi: " + str(exc))
 
 
 # The whale tab uses only public OKX market aggregates, never private wallets.
