@@ -37,6 +37,13 @@ def signal(d,sens,period):
   if i and np.isfinite(stops[i-1]):buy[i]=p>st and pp<=old;sell[i]=p<st and pp>=old
  return (1 if buy[-1] else -1 if sell[-1] else 0)
 def hdr():return {"apikey":K,"Authorization":"Bearer "+K,"Content-Type":"application/json"}
+def config():
+ r=requests.get(U+"/rest/v1/paper_bot_config",headers=hdr(),params={"account_id":"eq."+A},timeout=15);r.raise_for_status();x=r.json()
+ if not x:raise RuntimeError("paper_bot_config missing")
+ return x[0]
+def config_status(c,status,msg):
+ h=hdr();h["Prefer"]="resolution=merge-duplicates,return=minimal";row={**c,"account_id":A,"last_run_at":datetime.now(timezone.utc).isoformat(timespec="seconds"),"last_status":status,"last_message":msg[:300],"updated_at":datetime.now(timezone.utc).isoformat(timespec="seconds")}
+ r=requests.post(U+"/rest/v1/paper_bot_config",headers=h,params={"on_conflict":"account_id"},json=[row],timeout=15);r.raise_for_status()
 def load():
  r=requests.get(U+"/rest/v1/paper_trading_state",headers=hdr(),params={"account_id":"eq."+A},timeout=15);r.raise_for_status();x=r.json()
  if not x:raise RuntimeError("paper state missing")
@@ -49,19 +56,19 @@ def close(s,p,px,why):
  s["cash"]+=p["margin"]+p["direction"]*p["notional"]*(px/p["entry"]-1)-fee
  s["trades"].append({"Parite":p["inst"],"Yön":"LONG" if p["direction"]==1 else "SHORT","Strateji":p["strategy"],"Risk/Ödül":p.get("reward_ratio",2),"Giriş UTC":p["time"],"Çıkış UTC":datetime.now(timezone.utc).isoformat(timespec="seconds"),"Giriş":p["entry"],"Çıkış":px,"Net P&L (USDT)":round(pnl,4),"Çıkış nedeni":why});s["positions"].remove(p)
 def main():
- s=load();u=uni();quotes={x["id"]:x["px"] for x in u}
+ s=load();c=config();u=uni();quotes={x["id"]:x["px"] for x in u}
  for p in list(s.get("positions",[])):
   px=quotes.get(p["inst"])
   if not px:continue
   a=px<=p["stop"] if p["direction"]==1 else px>=p["stop"];b=px>=p["target"] if p["direction"]==1 else px<=p["target"]
   if a or b:close(s,p,px,"STOP" if a else "HEDEF")
- if os.getenv("BOT_ENABLED","false").lower() not in ("true","1","yes","on"):save(s);print("disabled; exits checked");return
- if os.getenv("BOT_STRATEGY","NKRAL1")!="NKRAL1":raise RuntimeError("V8.0 cron worker currently supports NKRAL1 only")
- n=max(1,min(60,int(os.getenv("BOT_SCAN_COUNT","30"))));m=max(1,min(50,int(os.getenv("BOT_MAX_POSITIONS","5"))));rr=max(2,min(5,int(os.getenv("BOT_REWARD_RATIO","2"))));sens=float(os.getenv("BOT_NK_SENS","1"));period=int(os.getenv("BOT_NK_ATR","10"))
+ if not bool(c.get("enabled",False)):save(s);config_status(c,"PAUSED","Worker çalıştı; yeni girişler duraklatılmış.");print("disabled; exits checked");return
+ if c.get("strategy","NKRAL1")!="NKRAL1":raise RuntimeError("V8.0 cron worker currently supports NKRAL1 only")
+ n=max(1,min(60,int(c.get("scan_count",30))));m=max(1,min(50,int(c.get("max_positions",5))));rr=max(2,min(5,int(c.get("reward_ratio",2))));sens=float(c.get("nk_sens",1));period=int(c.get("nk_atr",10))
  now=datetime.now(timezone.utc);today=now.strftime("%Y-%m-%d");s.setdefault("seen",[])
  if s.get("day")!=today:s["day"]=today;s["day_start"]=s["cash"]+sum(p["margin"] for p in s["positions"])
  eq=s["cash"]+sum(p["margin"]+p["direction"]*p["notional"]*(quotes.get(p["inst"],p["entry"])/p["entry"]-1) for p in s["positions"])
- if s["day_start"]-eq>=15:save(s);print("daily loss stop");return
+ if s["day_start"]-eq>=15:save(s);config_status(c,"DAILY_STOP","Günlük 15 USDT zarar eşiği; yeni giriş yok.");print("daily loss stop");return
  opened=0
  for x in u[:n]:
   if len(s["positions"])>=m or s["cash"]<10:break
@@ -82,5 +89,5 @@ def main():
    if margin+fee>s["cash"] or notional<10:continue
    s["cash"]-=margin+fee;s["positions"].append({"inst":q,"strategy":"NKRAL1","direction":direction,"entry":px,"stop":stop,"target":target,"reward_ratio":rr,"notional":notional,"margin":margin,"entry_fee":fee,"time":now.isoformat(timespec="seconds"),"bar":bar});opened+=1
   except (ValueError,KeyError,TypeError,IndexError,requests.RequestException):continue
- s["seen"]=s["seen"][-1500:];s["last_scan"]=now.isoformat(timespec="seconds");save(s);print(f"OK opened={opened} positions={len(s['positions'])}")
+ s["seen"]=s["seen"][-1500:];s["last_scan"]=now.isoformat(timespec="seconds");save(s);msg=f"opened={opened} positions={len(s['positions'])}";config_status(c,"OK",msg);print("OK "+msg)
 if __name__=="__main__":main()
