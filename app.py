@@ -1,4 +1,4 @@
-"""BURAK CRYPTO RADAR V6.9 — OKX + BIST and read-only OKX account view.
+"""BURAK CRYPTO RADAR V7.0 — OKX + BIST and read-only OKX account view.
 No order placement, cancellation, transfers, or leverage execution.
 """
 import base64
@@ -1065,7 +1065,7 @@ def paper_check_exits(state, quotes):
     return closed_count
 
 
-def paper_scan(state, cfg, universe, max_coins, reward_ratio, allow_manual=False):
+def paper_scan(state, cfg, universe, max_coins, reward_ratio, max_positions=5, allow_manual=False):
     """One on-demand simulation tick. Closed-bar same-timeframe technical hybrid;
     with cross-timeframe Fibonacci. No exchange orders."""
     now = datetime.now(timezone.utc)
@@ -1084,7 +1084,7 @@ def paper_scan(state, cfg, universe, max_coins, reward_ratio, allow_manual=False
         return "Strateji değişti. Yeni strateji için sanal oturumu sıfırlayıp yeniden başlat."
     scanned, errors, opened = 0, 0, 0
     for _, item in universe.head(max_coins).iterrows():
-        if len(state["positions"]) >= 5 or state["cash"] < 10:
+        if len(state["positions"]) >= max_positions or state["cash"] < 10:
             break
         inst = item["Parite"]
         if any(p["inst"] == inst for p in state["positions"]):
@@ -1148,7 +1148,7 @@ def paper_scan(state, cfg, universe, max_coins, reward_ratio, allow_manual=False
             current_equity = paper_equity(state, quotes)
             reserved_margin = sum(p["margin"] for p in state["positions"])
             available_margin = max(0., current_equity * .80 - reserved_margin)
-            notional = min(5. / stop_fraction, current_equity * 5 * .16,
+            notional = min(5. / stop_fraction, current_equity * 5 * min(.16, .80 / max_positions),
                            available_margin * 5, state["cash"] * 5 * .95)
             margin = notional / 5
             entry_fee = notional * .0005
@@ -1172,9 +1172,9 @@ def paper_scan(state, cfg, universe, max_coins, reward_ratio, allow_manual=False
 
 
 with paper_tab:
-    st.subheader("🧪 Paper Trading V6.9 — 500 USDT / 5x / seçili strateji")
+    st.subheader("🧪 Paper Trading V7.0 — 500 USDT / 5x / seçili strateji")
     st.warning("Bu bir OTURUM İÇİ simülasyondur: tarayıcı/oturum kapalıyken veya uygulama uyuduğunda otomatik tarama/stop çalışmaz; uygulama yeniden başlarsa kayıtlar silinebilir. 7/24 bot veya güvenilir geçmiş performans testi değildir.")
-    st.caption("Gerçek OKX hesabına emir gönderilmez. İşlemler sanal 500 USDT ile, maksimum 5 isolated pozisyon ve işlem başına en fazla 5 USDT brüt planlanan stop riskiyle modellenir. Pozisyon başına teminat en fazla özkaynağın %16’sı, toplam ayrılan teminat en fazla %80’idir.")
+    st.caption("Gerçek OKX hesabına emir gönderilmez. İşlemler sanal 500 USDT ile, seçilebilir maksimum 5–50 isolated pozisyon ve işlem başına en fazla 5 USDT brüt planlanan stop riskiyle modellenir. Pozisyon başına teminat üst sınırı seçilen pozisyon sayısına göre düşürülür; toplam ayrılan teminat en fazla özkaynağın %80’idir.")
     paper_creds = okx_account_secrets()
     if not paper_creds.get("dashboard_password") or not st.session_state.get("okx_account_unlocked", False):
         st.info("Bu sekme için önce 🔐 OKX Hesabım bölümünde panel şifrenle giriş yap.")
@@ -1233,7 +1233,13 @@ with paper_tab:
                                     format_func=lambda x: f"1:{x}", index=0,
                                     key="paper_reward_ratio",
                                     help="Stop 1,5 ATR sabit; hedef oran × 1,5 ATR. Açık işlemlerin hedefi değişmez.")
-        st.caption(f"Yeni sanal işlemler: stop 1,5 ATR · hedef {1.5 * reward_ratio:g} ATR · en fazla 5 açık pozisyon.")
+        max_positions = st.selectbox(
+            "📂 Maksimum eşzamanlı açık pozisyon",
+            [5, 10, 15, 20, 25, 30, 40, 50],
+            index=0, key="paper_max_positions",
+            help="Yalnızca yeni pozisyon açma sınırını belirler. Mevcut pozisyonları kapatmaz. Toplam teminat limiti %80 olarak kalır."
+        )
+        st.caption(f"Yeni sanal işlemler: stop 1,5 ATR · hedef {1.5 * reward_ratio:g} ATR · en fazla {max_positions} açık pozisyon. Pozisyon başına azami teminat: %{min(16, 80 / max_positions):g}.")
         scan_count = st.select_slider("Her turda hacme göre taranacak coin", [10, 20, 30, 40, 50, 60], value=30,
                                       help="V6.2 prototipi bütün OKX coinlerini taramaz; ilk 60'a kadar seçilebilir.")
         if st.button("🔎 Sanal tarama + stop/hedef kontrolü", type="primary", use_container_width=True):
@@ -1243,7 +1249,7 @@ with paper_tab:
                     if ps["strategy"] is None:
                         ps["strategy"] = strategy_mode
                     message = paper_scan(ps, condition_cfg, pu, scan_count, reward_ratio,
-                                         allow_manual=(paper_mode == "Manuel tarama"))
+                                         max_positions=max_positions, allow_manual=(paper_mode == "Manuel tarama"))
                 paper_db_save(ps)
                 st.info(message)
             except (ValueError, requests.RequestException, KeyError, RuntimeError) as exc:
@@ -1269,7 +1275,7 @@ with paper_tab:
                 if elapsed >= 300:
                     try:
                         result = paper_scan(ps, condition_cfg, live_universe,
-                                            scan_count, reward_ratio)
+                                            scan_count, reward_ratio, max_positions=max_positions)
                         ps["last_auto_scan_ts"] = now_ts
                         st.info("Otomatik 5 dk tarama: " + result)
                     except (ValueError, requests.RequestException, KeyError, RuntimeError) as exc:
@@ -1293,7 +1299,7 @@ with paper_tab:
             a, b, c = st.columns(3)
             a.metric("Sanal özkaynak", f"{eq:,.2f} USDT")
             b.metric("Sanal nakit", f"{ps['cash']:,.2f} USDT")
-            c.metric("Açık pozisyon", f"{len(ps['positions'])}/5")
+            c.metric("Açık pozisyon", f"{len(ps['positions'])}/{max_positions}")
             if ps["positions"]:
                 st.markdown("**📂 Açık sanal pozisyonlar**")
                 st.caption("Her kart yalnızca kendi pozisyonunu kapatır. Kapatma tam miktar ve güncel OKX ticker fiyatı üzerinden sanaldır.")
