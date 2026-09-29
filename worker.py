@@ -57,6 +57,13 @@ def close(s,p,px,why):
  s["trades"].append({"Parite":p["inst"],"Yön":"LONG" if p["direction"]==1 else "SHORT","Strateji":p["strategy"],"Risk/Ödül":p.get("reward_ratio",2),"Giriş UTC":p["time"],"Çıkış UTC":datetime.now(timezone.utc).isoformat(timespec="seconds"),"Giriş":p["entry"],"Çıkış":px,"Net P&L (USDT)":round(pnl,4),"Çıkış nedeni":why});s["positions"].remove(p)
 def main():
  s=load();c=config();u=uni();quotes={x["id"]:x["px"] for x in u}
+ manual=str(c.get("manual_close_inst") or "").strip()
+ if manual:
+  p=next((x for x in s.get("positions",[]) if x.get("inst")==manual),None);px=quotes.get(manual)
+  if p is not None and px:
+   close(s,p,px,"MANUEL");c["manual_close_inst"]=None
+  elif p is None:
+   c["manual_close_inst"]=None
  for p in list(s.get("positions",[])):
   px=quotes.get(p["inst"])
   if not px:continue
