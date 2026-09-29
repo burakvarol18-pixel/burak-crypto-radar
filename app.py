@@ -1046,6 +1046,15 @@ def paper_bot_config_save(config):
     paper_bot_config_request("POST", [row])
 
 
+def paper_bot_manual_close_request(inst_id):
+    """Queue a paper-only manual close for the Render worker; no real OKX order."""
+    paper_bot_config_request("POST", [{
+        "account_id": "burak_paper_main",
+        "manual_close_inst": inst_id,
+        "updated_at": datetime.now(timezone.utc).isoformat(timespec="seconds")
+    }])
+
+
 def paper_equity(state, quotes):
     return state["cash"] + sum(
         p["margin"] + p["direction"] * p["notional"] *
@@ -1264,10 +1273,29 @@ on conflict (account_id) do nothing;""", language="sql")
                         with st.container(border=True):
                             st.markdown(f"**{p['inst']} · {'🟢 LONG' if p['direction']==1 else '🔴 SHORT'}**")
                             st.write(f"Giriş: {p['entry']:,.6g} · Fiyat: {mark:,.6g} · Stop: {p['stop']:,.6g} · Hedef: {p['target']:,.6g} · P&L: {pnl:+,.2f} USDT")
+                            pending_close = str(bot.get("manual_close_inst") or "")
+                            if pending_close == p["inst"]:
+                                st.info("⏳ Manuel kapatma isteği worker'a iletildi; en geç sonraki 5 dakikalık turda işlenecek.")
+                            elif st.button("✋ Sanal pozisyonu manuel kapat", key="paper_close_"+p["inst"], use_container_width=True):
+                                paper_bot_manual_close_request(p["inst"])
+                                st.success("Kapatma isteği Supabase'e yazıldı. Render worker sonraki turda güncel OKX fiyatıyla sanal pozisyonu kapatacak.")
+                                st.rerun()
                 else: st.info("Açık sanal pozisyon yok.")
                 if ps["trades"]:
                     hist=pd.DataFrame(ps["trades"]);st.dataframe(hist.iloc[::-1],use_container_width=True,hide_index=True)
                     st.download_button("📥 İşlem geçmişini CSV indir",hist.to_csv(index=False).encode("utf-8-sig"),"burak_paper_trades.csv","text/csv")
+                st.divider()
+                st.subheader("💰 Sistem Maliyeti")
+                st.caption("Render Cron Job için yaklaşık maliyet göstergesi. Gerçek fatura kullanım ve güncel tarifeye göre değişebilir.")
+                avg_sec = st.number_input("Bir worker turunun ortalama çalışma süresi (sn)", min_value=1, max_value=300, value=20, step=1, key="paper_cost_seconds")
+                monthly_runs = 30 * 24 * 12
+                compute_est = monthly_runs * float(avg_sec) / 60 * 0.00016
+                render_est = max(1.0, compute_est)
+                m1,m2,m3=st.columns(3)
+                m1.metric("Aylık çalışma", f"~{monthly_runs:,} tur")
+                m2.metric("Tahmini compute", f"~$ {compute_est:.2f}")
+                m3.metric("Tahmini Render", f"~$ {render_est:.2f}/ay")
+                st.caption("Hesap: 5 dakikada bir çalışma × seçilen ortalama süre × $0.00016/dk; Cron için $1/ay minimum varsayılmıştır. Vergi, tarife değişikliği ve limit aşımı dahil değildir.")
                 st.warning("V8 worker 5 dakikalık anlık fiyat örnekleriyle stop/hedef kontrol eder; iki kontrol arasında seviyeye dokunup geri dönen fiyatı kaçırabilir.")
         except (RuntimeError, ValueError, KeyError, requests.RequestException) as exc:
             st.error("V8 Paper kontrol paneli yüklenemedi: " + str(exc))
