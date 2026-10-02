@@ -558,9 +558,11 @@ st.title("📡 BURAK CRYPTO RADAR V6.8 — OKX + BIST")
 st.caption("Yalnızca OKX USDT perpetual verileri • LONG / SHORT araştırma sinyalleri • Otomatik emir göndermez")
 with st.sidebar:
     st.header("🎛️ Radar koşulları")
-    strategy_mode = st.selectbox("🧭 Strateji seçimi",
+    strategy_mode = st.selectbox("🧭 Radar analiz stratejisi",
                                  ["Mevcut Radar", "NKRAL1", "Hibrit"],
-                                 key="strategy_mode")
+                                 key="strategy_mode",
+                                 help="Bu seçim ana Radar ekranını etkiler; 7/24 Paper Bot stratejisini değiştirmez.")
+    st.caption("🤖 7/24 Paper Bot: **NKRAL1 AKTİF** · Bu ayar ana Radar içindir.")
     nk_sens = st.number_input("NKRAL ATR hassasiyeti — stop mesafesi", .1, 10., 1., .1, key="nk_sens", help="ATR çarpanı: düşük değer fiyatı daha yakından izler ve daha sık kesişim üretebilir; yüksek değer daha geniş stop verir.")
     nk_atr = st.number_input("NKRAL ATR periyodu — oynaklık süresi", 1, 100, 10, key="nk_atr", help="ATR hesaplamasında kullanılan mum sayısı; varsayılan 10.")
     st.caption("NKRAL1: ATR trailing stop kesişimi. Hibrit: NKRAL1 kesişimi ve mevcut radar aynı yönde.")
