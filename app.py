@@ -1284,6 +1284,64 @@ on conflict (account_id) do nothing;""", language="sql")
                 if ps["trades"]:
                     hist=pd.DataFrame(ps["trades"]);st.dataframe(hist.iloc[::-1],use_container_width=True,hide_index=True)
                     st.download_button("📥 İşlem geçmişini CSV indir",hist.to_csv(index=False).encode("utf-8-sig"),"burak_paper_trades.csv","text/csv")
+
+                    st.divider()
+                    st.subheader("📊 Performans Analizi")
+                    st.caption("Yalnızca kapanmış sanal işlemler hesaplanır; açık pozisyonların gerçekleşmemiş P&L'si bu bölüme dahil değildir.")
+                    perf = hist.copy()
+                    perf["Net P&L (USDT)"] = pd.to_numeric(perf["Net P&L (USDT)"], errors="coerce")
+                    perf = perf.dropna(subset=["Net P&L (USDT)"])
+                    if not perf.empty:
+                        pnl_s = perf["Net P&L (USDT)"]
+                        wins = pnl_s[pnl_s > 0]
+                        losses = pnl_s[pnl_s < 0]
+                        win_rate = 100 * len(wins) / len(perf)
+                        gross_profit = float(wins.sum())
+                        gross_loss = abs(float(losses.sum()))
+                        profit_factor = gross_profit / gross_loss if gross_loss > 0 else np.nan
+                        avg_win = float(wins.mean()) if len(wins) else 0.0
+                        avg_loss = float(losses.mean()) if len(losses) else 0.0
+                        cumulative = pnl_s.cumsum()
+                        peak = cumulative.cummax()
+                        max_dd = float((peak - cumulative).max()) if len(cumulative) else 0.0
+                        p1,p2,p3,p4 = st.columns(4)
+                        p1.metric("Kapanmış işlem", len(perf))
+                        p2.metric("Kazanma oranı", f"{win_rate:.1f}%")
+                        p3.metric("Net P&L", f"{pnl_s.sum():+,.2f} USDT")
+                        p4.metric("Profit Factor", f"{profit_factor:.2f}" if np.isfinite(profit_factor) else "∞")
+                        p5,p6,p7 = st.columns(3)
+                        p5.metric("Ort. kazanç", f"{avg_win:+,.2f} USDT")
+                        p6.metric("Ort. zarar", f"{avg_loss:+,.2f} USDT")
+                        p7.metric("Max gerçekleşmiş DD", f"{max_dd:,.2f} USDT")
+
+                        side = (perf.groupby("Yön", dropna=False)["Net P&L (USDT)"]
+                                .agg(["count", "sum", lambda x: (x > 0).sum()]).reset_index())
+                        side.columns = ["Yön", "İşlem", "Net P&L (USDT)", "Kazanan"]
+                        side["Kazanma %"] = (100 * side["Kazanan"] / side["İşlem"]).round(1)
+                        rr_perf = (perf.groupby("Risk/Ödül", dropna=False)["Net P&L (USDT)"]
+                                   .agg(["count", "sum", lambda x: (x > 0).sum()]).reset_index())
+                        rr_perf.columns = ["R:R", "İşlem", "Net P&L (USDT)", "Kazanan"]
+                        rr_perf["Kazanma %"] = (100 * rr_perf["Kazanan"] / rr_perf["İşlem"]).round(1)
+                        exit_perf = (perf.groupby("Çıkış nedeni", dropna=False)["Net P&L (USDT)"]
+                                     .agg(["count", "sum"]).reset_index())
+                        exit_perf.columns = ["Çıkış nedeni", "İşlem", "Net P&L (USDT)"]
+
+                        q1,q2 = st.columns(2)
+                        with q1:
+                            st.markdown("**LONG / SHORT**")
+                            st.dataframe(side, hide_index=True, use_container_width=True)
+                        with q2:
+                            st.markdown("**Risk / Ödül**")
+                            st.dataframe(rr_perf, hide_index=True, use_container_width=True)
+                        st.markdown("**Çıkış nedenleri**")
+                        st.dataframe(exit_perf, hide_index=True, use_container_width=True)
+
+                        chart_df = perf.copy()
+                        chart_df["İşlem #"] = range(1, len(chart_df) + 1)
+                        chart_df["Kümülatif P&L (USDT)"] = chart_df["Net P&L (USDT)"].cumsum()
+                        st.line_chart(chart_df.set_index("İşlem #")["Kümülatif P&L (USDT)"], use_container_width=True)
+                        if len(perf) < 100:
+                            st.info(f"Örneklem henüz küçük: {len(perf)} kapanmış işlem. 100+ işlemde metrikler daha anlamlı hale gelir.")
                 st.divider()
                 st.subheader("💰 Sistem Maliyeti")
                 st.caption("Render Cron Job için yaklaşık maliyet göstergesi. Gerçek fatura kullanım ve güncel tarifeye göre değişebilir.")
