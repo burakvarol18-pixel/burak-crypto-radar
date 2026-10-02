@@ -1342,6 +1342,25 @@ on conflict (account_id) do nothing;""", language="sql")
                         chart_df["İşlem #"] = range(1, len(chart_df) + 1)
                         chart_df["Kümülatif P&L (USDT)"] = chart_df["Net P&L (USDT)"].cumsum()
                         st.line_chart(chart_df.set_index("İşlem #")["Kümülatif P&L (USDT)"], use_container_width=True)
+
+                        st.markdown("**⚖️ 5x vs 10x — Aynı Sinyallerle Kaldıraç Simülasyonu**")
+                        st.caption("Paper Bot 5x çalışmaya devam eder. 10x sütunu, aynı işlemlerin pozisyon büyüklüğü kaldıraçla iki katına çıkarılsaydı oluşacak teorik P&L'yi gösterir; likidasyon, funding ve ek slipajı modellemez.")
+                        lev5 = pnl_s.astype(float)
+                        lev10 = lev5 * 2.0
+                        lev_df = pd.DataFrame({"5x": lev5.reset_index(drop=True), "10x teorik": lev10.reset_index(drop=True)})
+                        lev_curve = lev_df.cumsum()
+                        lev_equity = pd.concat([pd.DataFrame({"5x":[0.0], "10x teorik":[0.0]}), lev_curve], ignore_index=True)
+                        lev_dd = lev_equity.cummax() - lev_equity
+                        l1,l2,l3,l4 = st.columns(4)
+                        l1.metric("5x Net P&L", f"{lev5.sum():+,.2f} USDT")
+                        l2.metric("10x teorik Net P&L", f"{lev10.sum():+,.2f} USDT")
+                        l3.metric("5x Max DD", f"{lev_dd['5x'].max():,.2f} USDT")
+                        l4.metric("10x teorik Max DD", f"{lev_dd['10x teorik'].max():,.2f} USDT")
+                        lev_curve.index = range(1, len(lev_curve) + 1)
+                        lev_curve.index.name = "İşlem #"
+                        st.line_chart(lev_curve, use_container_width=True)
+                        st.warning("10x sonuçları yalnızca karşılaştırma simülasyonudur. Gerçek 10x kullanımında likidasyon mesafesi daralır; bu nedenle bu grafik gerçek 10x performans garantisi değildir.")
+
                         if len(perf) < 100:
                             st.info(f"Örneklem henüz küçük: {len(perf)} kapanmış işlem. 100+ işlemde metrikler daha anlamlı hale gelir.")
                 st.divider()
