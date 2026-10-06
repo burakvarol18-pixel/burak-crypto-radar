@@ -17,8 +17,8 @@ def uni():
   except:continue
   if px>0 and v>0:z.append({"id":q,"px":px,"vol":v})
  return sorted(z,key=lambda x:x["vol"],reverse=True)
-def candles(q):
- x=okx("/api/v5/market/candles",{"instId":q,"bar":"1H","limit":"300"});x=[r for r in x if len(r)>=9]
+def candles(q,bar="1H"):
+ x=okx("/api/v5/market/candles",{"instId":q,"bar":bar,"limit":"300"});x=[r for r in x if len(r)>=9]
  d=pd.DataFrame(x,columns=["ts","open","high","low","close","volume","vc","qv","confirm"])
  for c in ["open","high","low","close","qv"]:d[c]=pd.to_numeric(d[c],errors="coerce")
  d["date"]=pd.to_datetime(pd.to_numeric(d.ts),unit="ms",utc=True)
@@ -88,13 +88,18 @@ def main():
    if key in s["seen"]:continue
    direction=signal(d,sens,period);s["seen"].append(key)
    if not direction:continue
+   # V8.2: 4H NKRAL trend confirmation. Keep R:R unchanged; only aligned 1H/4H signals may enter.
+   d4=candles(q,"4H");d4=d4[d4.confirm=="1"].reset_index(drop=True)
+   if len(d4)<210:continue
+   trend4=signal(d4,sens,period)
+   if trend4!=direction:continue
    c=d.close.astype(float);tr=pd.concat([d.high-d.low,(d.high-c.shift()).abs(),(d.low-c.shift()).abs()],axis=1).max(axis=1);atr=float(tr.ewm(alpha=1/14,adjust=False).mean().iloc[-1]);px=x["px"]
    if not np.isfinite(atr) or atr<=0:continue
    stop=px-direction*1.5*atr;target=px+direction*1.5*rr*atr
    if stop<=0 or target<=0:continue
    frac=1.5*atr/px;eq=s["cash"]+sum(p["margin"] for p in s["positions"]);reserved=sum(p["margin"] for p in s["positions"]);avail=max(0.,eq*.8-reserved);notional=min(5/frac,eq*5*min(.16,.8/m),avail*5,s["cash"]*5*.95);margin=notional/5;fee=notional*.0005
    if margin+fee>s["cash"] or notional<10:continue
-   s["cash"]-=margin+fee;s["positions"].append({"inst":q,"strategy":"NKRAL1","direction":direction,"entry":px,"stop":stop,"target":target,"reward_ratio":rr,"notional":notional,"margin":margin,"entry_fee":fee,"time":now.isoformat(timespec="seconds"),"bar":bar});opened+=1
+   s["cash"]-=margin+fee;s["positions"].append({"inst":q,"strategy":"NKRAL1+4H","direction":direction,"entry":px,"stop":stop,"target":target,"reward_ratio":rr,"notional":notional,"margin":margin,"entry_fee":fee,"time":now.isoformat(timespec="seconds"),"bar":bar});opened+=1
   except (ValueError,KeyError,TypeError,IndexError,requests.RequestException):continue
  s["seen"]=s["seen"][-1500:];s["last_scan"]=now.isoformat(timespec="seconds");save(s);msg=f"opened={opened} positions={len(s['positions'])}";config_status(c,"OK",msg);print("OK "+msg)
 if __name__=="__main__":main()
