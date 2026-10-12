@@ -55,6 +55,9 @@ def close(s,p,px,why):
  fee=p["notional"]*(px/p["entry"])*.0005;pnl=p["direction"]*p["notional"]*(px/p["entry"]-1)-p["entry_fee"]-fee
  s["cash"]+=p["margin"]+p["direction"]*p["notional"]*(px/p["entry"]-1)-fee
  s["trades"].append({"Parite":p["inst"],"Yön":"LONG" if p["direction"]==1 else "SHORT","Strateji":p["strategy"],"Risk/Ödül":p.get("reward_ratio",2),"Giriş UTC":p["time"],"Çıkış UTC":datetime.now(timezone.utc).isoformat(timespec="seconds"),"Giriş":p["entry"],"Çıkış":px,"Net P&L (USDT)":round(pnl,4),"Çıkış nedeni":why});s["positions"].remove(p)
+def stop_exposure(positions):
+ # Potential remaining loss at stops, including estimated exit fees; conservative and non-negative.
+ return sum(max(0.,p["direction"]*p["notional"]*(p["entry"]-p["stop"])/p["entry"] + p["notional"]*(p["stop"]/p["entry"])*.0005) for p in positions)
 def main():
  s=load();c=config();u=uni();quotes={x["id"]:x["px"] for x in u}
  manual=str(c.get("manual_close_inst") or "").strip()
@@ -98,8 +101,10 @@ def main():
    stop=px-direction*1.5*atr;target=px+direction*1.5*rr*atr
    if stop<=0 or target<=0:continue
    frac=1.5*atr/px;eq=s["cash"]+sum(p["margin"] for p in s["positions"]);reserved=sum(p["margin"] for p in s["positions"]);avail=max(0.,eq*.8-reserved);notional=min(5/frac,eq*5*min(.16,.8/m),avail*5,s["cash"]*5*.95);margin=notional/5;fee=notional*.0005
+   projected_loss=notional*frac + notional*(stop/px)*.0005
+   if stop_exposure(s["positions"])+projected_loss>15.:continue
    if margin+fee>s["cash"] or notional<10:continue
-   s["cash"]-=margin+fee;s["positions"].append({"inst":q,"strategy":"NKRAL1+4H","direction":direction,"entry":px,"stop":stop,"target":target,"reward_ratio":rr,"notional":notional,"margin":margin,"entry_fee":fee,"time":now.isoformat(timespec="seconds"),"bar":bar});opened+=1
+   s["cash"]-=margin+fee;s["positions"].append({"inst":q,"strategy":"NKRAL1+4H","risk_guard":"V8.3-open-stop-15USDT","direction":direction,"entry":px,"stop":stop,"target":target,"reward_ratio":rr,"notional":notional,"margin":margin,"entry_fee":fee,"time":now.isoformat(timespec="seconds"),"bar":bar});opened+=1
   except (ValueError,KeyError,TypeError,IndexError,requests.RequestException):continue
  s["seen"]=s["seen"][-1500:];s["last_scan"]=now.isoformat(timespec="seconds");save(s);msg=f"opened={opened} positions={len(s['positions'])}";config_status(c,"OK",msg);print("OK "+msg)
 if __name__=="__main__":main()
