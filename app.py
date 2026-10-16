@@ -1255,9 +1255,10 @@ on conflict (account_id) do nothing;""", language="sql")
                 c1,c2 = st.columns(2)
                 sens = c1.number_input("NKRAL hassasiyet", .1, 10., float(bot.get("nk_sens",1.)), .1)
                 atrp = c2.number_input("NKRAL ATR periyodu", 1, 100, int(bot.get("nk_atr",10)), 1)
-                st.caption("V8.0 7/24 worker şu aşamada NKRAL1 kullanır. Stop 1,5 ATR · 5x · işlem başına azami 5 USDT brüt stop riski · toplam teminat üst sınırı %80.")
+                st.caption("V8.4: NKRAL1 + 4H veya Mevcut Radar (teknik, kapanmış 1H mum). Mevcut Radar testinde 50 kapanış sonrası yeni giriş durur. Stop 1,5 ATR · 5x · toplam açık stop riski azami 15 USDT.")
+                bot_strategy = st.selectbox("🤖 Otomatik bot stratejisi", ["NKRAL1","Mevcut Radar"], index=0 if bot.get("strategy")!="Mevcut Radar" else 1)
                 if st.button("💾 7/24 ayarlarını kaydet", type="primary", use_container_width=True):
-                    paper_bot_config_save({"enabled":enabled,"strategy":"NKRAL1","reward_ratio":rr,
+                    paper_bot_config_save({"enabled":enabled,"strategy":bot_strategy,"reward_ratio":rr,
                                            "max_positions":mp,"scan_count":sc,"nk_sens":sens,"nk_atr":atrp,
                                            "last_run_at":bot.get("last_run_at"),"last_status":bot.get("last_status"),
                                            "last_message":bot.get("last_message")})
