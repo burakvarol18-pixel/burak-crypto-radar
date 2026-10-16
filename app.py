@@ -489,6 +489,112 @@ def compare_strategies_ui(cfg):
                                "burak_strateji_karsilastirma.csv", "text/csv",
                                key="comparison_export")
 
+
+def research_scenarios_ui(cfg):
+    """Read-only exploratory OHLC replay. Never modifies the paper bot."""
+    st.subheader("🔬 V8.5 — Paralel filtre ve kâr yönetimi araştırması")
+    st.caption("Bu araştırma canlı Paper Bot ayarlarını DEĞİŞTİRMEZ. 1H Mevcut Radar + 1H/4H Fibonacci sinyalleri temel alınır.")
+    symbol=st.text_input("Araştırma paritesi", "BTC", key="research_symbol").strip().upper()
+    if not st.button("🧪 Senaryoları karşılaştır", key="research_run"):
+        return
+    base=symbol.removesuffix("-USDT-SWAP").removesuffix("-USDT")
+    if not base or not base.replace("-","").isalnum():
+        st.error("Geçerli bir parite girin.");return
+    try:
+        pair=base+"-USDT-SWAP"
+        d=okx_candles(pair,"1h");d=d[d.confirm=="1"].reset_index(drop=True)
+        d4=okx_candles(pair,"4h");d4=d4[d4.confirm=="1"].reset_index(drop=True)
+        btc4=okx_candles("BTC-USDT-SWAP","4h");btc4=btc4[btc4.confirm=="1"].reset_index(drop=True)
+        btcd=okx_candles("BTC-USDT-SWAP","1D");btcd=btcd[btcd.confirm=="1"].reset_index(drop=True)
+        if len(d)<220 or min(len(d4),len(btc4),len(btcd))<205:
+            st.warning("Geçmiş veri yetersiz.");return
+        scenarios=["Baz (1:3)","BTC trend filtresi","ADX ≥25","ADX ≥30","1R maliyete stop","2R'de %50 kâr"]
+        results={name:[] for name in scenarios}
+        def confirmed_asof(frame,at):
+            # OKX timestamp is candle OPEN: only use candles that have fully finished.
+            step=(pd.Timedelta(days=1) if frame is btcd else pd.Timedelta(hours=4))
+            return frame[frame.date+step<=at]
+        def btc_aligned(at,direction):
+            for frame in (btc4,btcd):
+                h=confirmed_asof(frame,at)
+                if len(h)<200:return False
+                close=h.close
+                e50=close.ewm(span=50,adjust=False).mean().iloc[-1]
+                e200=close.ewm(span=200,adjust=False).mean().iloc[-1]
+                if direction*(e50-e200)<=0:return False
+            return True
+        def replay(start,direction,atr,mode):
+            entry=float(d.open.iloc[start]);stop=entry-direction*1.5*atr
+            if entry<=0 or stop<=0:return None
+            risk=abs(entry-stop);target=entry+direction*3*risk
+            realized=0.;remaining=1.;be=False;partial=False
+            # 24h maximum holding; pessimistic stop-first when both hit same bar
+            for j in range(start,min(start+24,len(d))):
+                high=float(d.high.iloc[j]);low=float(d.low.iloc[j])
+                stop_hit=low<=stop if direction==1 else high>=stop
+                target_hit=high>=target if direction==1 else low<=target
+                if stop_hit:
+                    exit_px=min(float(d.open.iloc[j]),stop) if direction==1 else max(float(d.open.iloc[j]),stop)
+                    realized+=remaining*direction*(exit_px-entry)/entry;remaining=0;break
+                if target_hit:
+                    realized+=remaining*direction*(target-entry)/entry;remaining=0;break
+                # Move/partial only after bar has finished; effects begin next bar.
+                if mode=="1R maliyete stop" and (high>=entry+risk if direction==1 else low<=entry-risk):
+                    stop=entry;be=True
+                if mode=="2R'de %50 kâr" and not partial and (high>=entry+2*risk if direction==1 else low<=entry-2*risk):
+                    realized+=.5*direction*(2*risk*direction)/entry;remaining=.5;partial=True
+            if remaining:
+                realized+=remaining*direction*(float(d.close.iloc[min(start+23,len(d)-1)])-entry)/entry
+            # 0.05% each side + 0.05% each side slippage (approximate)
+            return 100*(realized-.002)
+        for i in range(205,len(d)-1):
+            # Only last CLOSED 1H candle available at entry time.
+            hist=d.iloc[:i+1].copy();at=d.date.iloc[i]+pd.Timedelta(hours=1)
+            tech=technical(hist.rename(columns={"qv":"quote_volume"}),cfg)
+            if tech is None:continue
+            active=[k for k,v in cfg["enabled"].items() if v]
+            direction=(1 if all(tech["_long_tests"][k] for k in active) else
+                       -1 if all(tech["_short_tests"][k] for k in active) else 0)
+            if not direction:continue
+            h4=confirmed_asof(d4,at)
+            if len(h4)<30:continue
+            price=float(hist.close.iloc[-1])
+            # Use same Fibonacci formula as production with confirmed bars only.
+            def fib(frame):
+                frame=frame.tail(100)
+                if len(frame)<30:return False
+                hi=float(frame.high.max());lo=float(frame.low.min())
+                tr=pd.concat([frame.high-frame.low,(frame.high-frame.close.shift()).abs(),
+                              (frame.low-frame.close.shift()).abs()],axis=1).max(axis=1)
+                atr=float(tr.ewm(alpha=1/14,adjust=False).mean().iloc[-1])
+                levels=[lo+(hi-lo)*x for x in (0,.236,.382,.5,.618,.786,1)]
+                eligible=[v for v in levels if v<=price] if direction==1 else [v for v in levels if v>=price]
+                return bool(eligible) and atr>0 and abs(price-(max(eligible) if direction==1 else min(eligible)))/atr<=1
+            if not fib(hist) or not fib(h4):continue
+            tr=pd.concat([hist.high-hist.low,(hist.high-hist.close.shift()).abs(),
+                          (hist.low-hist.close.shift()).abs()],axis=1).max(axis=1)
+            atr=float(tr.ewm(alpha=1/14,adjust=False).mean().iloc[-1])
+            if not np.isfinite(atr) or atr<=0:continue
+            for name in scenarios:
+                if name=="BTC trend filtresi" and not btc_aligned(at,direction):continue
+                if name=="ADX ≥25" and tech["ADX"]<25:continue
+                if name=="ADX ≥30" and tech["ADX"]<30:continue
+                pnl=replay(i+1,direction,atr,name)
+                if pnl is not None:results[name].append(pnl)
+        rows=[]
+        for name,values in results.items():
+            n=len(values);wins=sum(x>0 for x in values);profit=sum(max(0,x) for x in values);loss=-sum(min(0,x) for x in values)
+            rows.append({"Senaryo":name,"İşlem":n,"Kazanma %":round(100*wins/n,1) if n else None,
+                         "Ortalama net %":round(sum(values)/n,3) if n else None,
+                         "Profit Factor":round(profit/loss,2) if loss else None})
+        st.dataframe(pd.DataFrame(rows),hide_index=True,use_container_width=True)
+        st.warning("Keşifsel analiz: OKX'in son ~300 mumu, 205 mum ısınma ve en fazla 24 saatlik çıkış penceresi kullanılır. "
+                   "Sinyaller çakışabilir, eşzamanlı portföy riski ve fonlama modellenmez. "
+                   "Aynı mumda stop önce varsayılır; maliyete stop ve kısmi kâr sonraki mumdan itibaren etkindir. "
+                   "Komisyon ve kayma yaklaşık %0,20 gidiş-dönüş alınır. Az sayıda işlemden kesin sonuç çıkarılmamalı.")
+    except Exception as exc:
+        st.error(f"Araştırma çalıştırılamadı: {type(exc).__name__}: {exc}")
+
 @st.cache_data(ttl=15, show_spinner=False)
 def okx_public(path, params=None):
     payload = get_json("https://www.okx.com" + path, params)
@@ -823,6 +929,7 @@ with radar_tab:
     st.fragment(run_every=f"{refresh_minutes * 60}s")(live_radar)()
     st.divider()
     compare_strategies_ui(condition_cfg)
+    research_scenarios_ui(condition_cfg)
 
 
 
