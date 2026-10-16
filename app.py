@@ -562,7 +562,7 @@ with st.sidebar:
                                  ["Mevcut Radar", "NKRAL1", "Hibrit"],
                                  key="strategy_mode",
                                  help="Bu seçim ana Radar ekranını etkiler; 7/24 Paper Bot stratejisini değiştirmez.")
-    st.caption("🤖 7/24 Paper Bot: **NKRAL1 AKTİF** · Bu ayar ana Radar içindir.")
+    st.caption("🤖 7/24 Paper Bot stratejisi Paper Trading bölümünden yönetilir; bu seçim yalnızca ana Radar içindir.")
     nk_sens = st.number_input("NKRAL ATR hassasiyeti — stop mesafesi", .1, 10., 1., .1, key="nk_sens", help="ATR çarpanı: düşük değer fiyatı daha yakından izler ve daha sık kesişim üretebilir; yüksek değer daha geniş stop verir.")
     nk_atr = st.number_input("NKRAL ATR periyodu — oynaklık süresi", 1, 100, 10, key="nk_atr", help="ATR hesaplamasında kullanılan mum sayısı; varsayılan 10.")
     st.caption("NKRAL1: ATR trailing stop kesişimi. Hibrit: NKRAL1 kesişimi ve mevcut radar aynı yönde.")
@@ -1255,7 +1255,7 @@ on conflict (account_id) do nothing;""", language="sql")
                 c1,c2 = st.columns(2)
                 sens = c1.number_input("NKRAL hassasiyet", .1, 10., float(bot.get("nk_sens",1.)), .1)
                 atrp = c2.number_input("NKRAL ATR periyodu", 1, 100, int(bot.get("nk_atr",10)), 1)
-                st.caption("V8.4: NKRAL1 + 4H veya Mevcut Radar (teknik, kapanmış 1H mum). Mevcut Radar testinde 50 kapanış sonrası yeni giriş durur. Stop 1,5 ATR · 5x · toplam açık stop riski azami 15 USDT.")
+                st.caption("V8.4: NKRAL1 + 4H veya Mevcut Radar + Fib (kapanmış 1H ve 4H mum, her iki Fibonacci teyidi 1 ATR). Mevcut Radar testinde 50 kapanış sonrası yeni giriş durur. Stop 1,5 ATR · 5x · toplam açık stop riski azami 15 USDT.")
                 bot_strategy = st.selectbox("🤖 Otomatik bot stratejisi", ["NKRAL1","Mevcut Radar"], index=0 if bot.get("strategy")!="Mevcut Radar" else 1)
                 if st.button("💾 7/24 ayarlarını kaydet", type="primary", use_container_width=True):
                     paper_bot_config_save({"enabled":enabled,"strategy":bot_strategy,"reward_ratio":rr,
