@@ -36,6 +36,24 @@ def signal(d,sens,period):
   st=max(old,p-loss) if p>old and pp>old else min(old,p+loss) if p<old and pp<old else p-loss if p>old else p+loss;stops[i]=st
   if i and np.isfinite(stops[i-1]):buy[i]=p>st and pp<=old;sell[i]=p<st and pp>=old
  return (1 if buy[-1] else -1 if sell[-1] else 0)
+def radar_signal(d):
+ # Matches app.py technical() default enabled EMA/MACD/DI/ADX/RSI/volume checks; closed 1H candles only.
+ close=d.close.astype(float);high=d.high.astype(float);low=d.low.astype(float);vol=d.qv.astype(float)
+ e20=close.ewm(span=20,adjust=False).mean();e50=close.ewm(span=50,adjust=False).mean()
+ delta=close.diff();gain=delta.clip(lower=0).ewm(alpha=1/14,adjust=False).mean();loss=(-delta.clip(upper=0)).ewm(alpha=1/14,adjust=False).mean()
+ rsi=100-100/(1+gain/loss.replace(0,np.nan))
+ macd=close.ewm(span=12,adjust=False).mean()-close.ewm(span=26,adjust=False).mean();ms=macd.ewm(span=9,adjust=False).mean()
+ up=high.diff();down=-low.diff();pdm=up.where((up>down)&(up>0),0.);mdm=down.where((down>up)&(down>0),0.)
+ tr=pd.concat([high-low,(high-close.shift()).abs(),(low-close.shift()).abs()],axis=1).max(axis=1)
+ atr=tr.ewm(alpha=1/14,adjust=False).mean().replace(0,np.nan)
+ pdi=100*pdm.ewm(alpha=1/14,adjust=False).mean()/atr;mdi=100*mdm.ewm(alpha=1/14,adjust=False).mean()/atr
+ adx=(100*(pdi-mdi).abs()/(pdi+mdi).replace(0,np.nan)).ewm(alpha=1/14,adjust=False).mean()
+ v=vol.iloc[-1]/vol.iloc[-21:-1].mean() if vol.iloc[-21:-1].mean()>0 else np.nan
+ if not np.isfinite(v) or not np.isfinite(adx.iloc[-1]) or not np.isfinite(rsi.iloc[-1]):return 0
+ common=adx.iloc[-1]>=20 and v>=1.2
+ lng=common and close.iloc[-1]>e20.iloc[-1]>e50.iloc[-1] and macd.iloc[-1]>ms.iloc[-1] and pdi.iloc[-1]>mdi.iloc[-1] and 45<=rsi.iloc[-1]<=68
+ sht=common and close.iloc[-1]<e20.iloc[-1]<e50.iloc[-1] and macd.iloc[-1]<ms.iloc[-1] and mdi.iloc[-1]>pdi.iloc[-1] and 32<=rsi.iloc[-1]<=55
+ return 1 if lng and not sht else -1 if sht and not lng else 0
 def hdr():return {"apikey":K,"Authorization":"Bearer "+K,"Content-Type":"application/json"}
 def config():
  r=requests.get(U+"/rest/v1/paper_bot_config",headers=hdr(),params={"account_id":"eq."+A},timeout=15);r.raise_for_status();x=r.json()
@@ -73,7 +91,10 @@ def main():
   a=px<=p["stop"] if p["direction"]==1 else px>=p["stop"];b=px>=p["target"] if p["direction"]==1 else px<=p["target"]
   if a or b:close(s,p,px,"STOP" if a else "HEDEF")
  if not bool(c.get("enabled",False)):save(s);config_status(c,"PAUSED","Worker çalıştı; yeni girişler duraklatılmış.");print("disabled; exits checked");return
- if c.get("strategy","NKRAL1")!="NKRAL1":raise RuntimeError("V8.0 cron worker currently supports NKRAL1 only")
+ mode=c.get("strategy","NKRAL1")
+ if mode not in ("NKRAL1","Mevcut Radar"):raise RuntimeError("Unsupported paper strategy")
+ if mode=="Mevcut Radar" and sum(t.get("Strateji")=="Mevcut Radar (teknik)" for t in s.get("trades",[]))>=50:
+  save(s);config_status(c,"TEST_COMPLETE","Mevcut Radar 50 kapanmış işleme ulaştı; yeni giriş durduruldu.");return
  n=max(1,min(60,int(c.get("scan_count",30))));m=max(1,min(50,int(c.get("max_positions",5))));rr=max(2,min(5,int(c.get("reward_ratio",2))));sens=float(c.get("nk_sens",1));period=int(c.get("nk_atr",10))
  now=datetime.now(timezone.utc);today=now.strftime("%Y-%m-%d");s.setdefault("seen",[])
  if s.get("day")!=today:s["day"]=today;s["day_start"]=s["cash"]+sum(p["margin"] for p in s["positions"])
@@ -89,13 +110,14 @@ def main():
    if len(d)<210:continue
    bar=str(d.iloc[-1].date);key=q+"|"+bar
    if key in s["seen"]:continue
-   direction=signal(d,sens,period);s["seen"].append(key)
+   direction=radar_signal(d) if mode=="Mevcut Radar" else signal(d,sens,period);s["seen"].append(key)
    if not direction:continue
    # V8.2: 4H NKRAL trend confirmation. Keep R:R unchanged; only aligned 1H/4H signals may enter.
-   d4=candles(q,"4H");d4=d4[d4.confirm=="1"].reset_index(drop=True)
-   if len(d4)<210:continue
-   trend4=signal(d4,sens,period)
-   if trend4!=direction:continue
+   if mode=="NKRAL1":
+    d4=candles(q,"4H");d4=d4[d4.confirm=="1"].reset_index(drop=True)
+    if len(d4)<210:continue
+    trend4=signal(d4,sens,period)
+    if trend4!=direction:continue
    c=d.close.astype(float);tr=pd.concat([d.high-d.low,(d.high-c.shift()).abs(),(d.low-c.shift()).abs()],axis=1).max(axis=1);atr=float(tr.ewm(alpha=1/14,adjust=False).mean().iloc[-1]);px=x["px"]
    if not np.isfinite(atr) or atr<=0:continue
    stop=px-direction*1.5*atr;target=px+direction*1.5*rr*atr
@@ -104,7 +126,7 @@ def main():
    projected_loss=notional*frac + notional*(stop/px)*.0005
    if stop_exposure(s["positions"])+projected_loss>15.:continue
    if margin+fee>s["cash"] or notional<10:continue
-   s["cash"]-=margin+fee;s["positions"].append({"inst":q,"strategy":"NKRAL1+4H","risk_guard":"V8.3-open-stop-15USDT","direction":direction,"entry":px,"stop":stop,"target":target,"reward_ratio":rr,"notional":notional,"margin":margin,"entry_fee":fee,"time":now.isoformat(timespec="seconds"),"bar":bar});opened+=1
+   s["cash"]-=margin+fee;s["positions"].append({"inst":q,"strategy":("Mevcut Radar (teknik)" if mode=="Mevcut Radar" else "NKRAL1+4H"),"risk_guard":"V8.3-open-stop-15USDT","direction":direction,"entry":px,"stop":stop,"target":target,"reward_ratio":rr,"notional":notional,"margin":margin,"entry_fee":fee,"time":now.isoformat(timespec="seconds"),"bar":bar});opened+=1
   except (ValueError,KeyError,TypeError,IndexError,requests.RequestException):continue
  s["seen"]=s["seen"][-1500:];s["last_scan"]=now.isoformat(timespec="seconds");save(s);msg=f"opened={opened} positions={len(s['positions'])}";config_status(c,"OK",msg);print("OK "+msg)
 if __name__=="__main__":main()
