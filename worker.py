@@ -54,6 +54,16 @@ def radar_signal(d):
  lng=common and close.iloc[-1]>e20.iloc[-1]>e50.iloc[-1] and macd.iloc[-1]>ms.iloc[-1] and pdi.iloc[-1]>mdi.iloc[-1] and 45<=rsi.iloc[-1]<=68
  sht=common and close.iloc[-1]<e20.iloc[-1]<e50.iloc[-1] and macd.iloc[-1]<ms.iloc[-1] and mdi.iloc[-1]>pdi.iloc[-1] and 32<=rsi.iloc[-1]<=55
  return 1 if lng and not sht else -1 if sht and not lng else 0
+def fib_ok(d,price,direction,limit=1.0):
+ closed=d[d.confirm=="1"].tail(100)
+ if len(closed)<30:return False
+ hi=float(closed.high.max());lo=float(closed.low.min());prev=closed.close.shift()
+ tr=pd.concat([closed.high-closed.low,(closed.high-prev).abs(),(closed.low-prev).abs()],axis=1).max(axis=1)
+ atr=float(tr.ewm(alpha=1/14,adjust=False).mean().iloc[-1])
+ if hi<=lo or not np.isfinite(atr) or atr<=0:return False
+ levels=sorted(lo+(hi-lo)*x for x in (0,.236,.382,.5,.618,.786,1))
+ eligible=[x for x in levels if x<=price] if direction==1 else [x for x in levels if x>=price]
+ return bool(eligible) and abs(price-(max(eligible) if direction==1 else min(eligible)))/atr<=limit
 def hdr():return {"apikey":K,"Authorization":"Bearer "+K,"Content-Type":"application/json"}
 def config():
  r=requests.get(U+"/rest/v1/paper_bot_config",headers=hdr(),params={"account_id":"eq."+A},timeout=15);r.raise_for_status();x=r.json()
@@ -93,7 +103,7 @@ def main():
  if not bool(c.get("enabled",False)):save(s);config_status(c,"PAUSED","Worker çalıştı; yeni girişler duraklatılmış.");print("disabled; exits checked");return
  mode=c.get("strategy","NKRAL1")
  if mode not in ("NKRAL1","Mevcut Radar"):raise RuntimeError("Unsupported paper strategy")
- if mode=="Mevcut Radar" and sum(t.get("Strateji")=="Mevcut Radar (teknik)" for t in s.get("trades",[]))>=50:
+ if mode=="Mevcut Radar" and sum(t.get("Strateji")=="Mevcut Radar + Fib" for t in s.get("trades",[]))>=50:
   save(s);config_status(c,"TEST_COMPLETE","Mevcut Radar 50 kapanmış işleme ulaştı; yeni giriş durduruldu.");return
  n=max(1,min(60,int(c.get("scan_count",30))));m=max(1,min(50,int(c.get("max_positions",5))));rr=max(2,min(5,int(c.get("reward_ratio",2))));sens=float(c.get("nk_sens",1));period=int(c.get("nk_atr",10))
  now=datetime.now(timezone.utc);today=now.strftime("%Y-%m-%d");s.setdefault("seen",[])
@@ -113,6 +123,11 @@ def main():
    direction=radar_signal(d) if mode=="Mevcut Radar" else signal(d,sens,period);s["seen"].append(key)
    if not direction:continue
    # V8.2: 4H NKRAL trend confirmation. Keep R:R unchanged; only aligned 1H/4H signals may enter.
+   if mode=="Mevcut Radar":
+    signal_price=float(d.close.iloc[-1])
+    if not fib_ok(d,signal_price,direction):continue
+    d4fib=candles(q,"4H")
+    if not fib_ok(d4fib,signal_price,direction):continue
    if mode=="NKRAL1":
     d4=candles(q,"4H");d4=d4[d4.confirm=="1"].reset_index(drop=True)
     if len(d4)<210:continue
@@ -126,7 +141,7 @@ def main():
    projected_loss=notional*frac + notional*(stop/px)*.0005
    if stop_exposure(s["positions"])+projected_loss>15.:continue
    if margin+fee>s["cash"] or notional<10:continue
-   s["cash"]-=margin+fee;s["positions"].append({"inst":q,"strategy":("Mevcut Radar (teknik)" if mode=="Mevcut Radar" else "NKRAL1+4H"),"risk_guard":"V8.3-open-stop-15USDT","direction":direction,"entry":px,"stop":stop,"target":target,"reward_ratio":rr,"notional":notional,"margin":margin,"entry_fee":fee,"time":now.isoformat(timespec="seconds"),"bar":bar});opened+=1
+   s["cash"]-=margin+fee;s["positions"].append({"inst":q,"strategy":("Mevcut Radar + Fib" if mode=="Mevcut Radar" else "NKRAL1+4H"),"risk_guard":"V8.3-open-stop-15USDT","direction":direction,"entry":px,"stop":stop,"target":target,"reward_ratio":rr,"notional":notional,"margin":margin,"entry_fee":fee,"time":now.isoformat(timespec="seconds"),"bar":bar});opened+=1
   except (ValueError,KeyError,TypeError,IndexError,requests.RequestException):continue
  s["seen"]=s["seen"][-1500:];s["last_scan"]=now.isoformat(timespec="seconds");save(s);msg=f"opened={opened} positions={len(s['positions'])}";config_status(c,"OK",msg);print("OK "+msg)
 if __name__=="__main__":main()
