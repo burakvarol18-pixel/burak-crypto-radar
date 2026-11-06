@@ -115,8 +115,8 @@ def main():
  if not bool(c.get("enabled",False)):save(s);config_status(c,"PAUSED","Worker çalıştı; yeni girişler duraklatılmış.");print("disabled; exits checked");return
  mode=c.get("strategy","NKRAL1")
  if mode not in ("NKRAL1","Mevcut Radar"):raise RuntimeError("Unsupported paper strategy")
- if mode=="Mevcut Radar" and sum(t.get("Strateji")=="Mevcut Radar + Fib + BTC LONG" for t in s.get("trades",[]))>=50:
-  save(s);config_status(c,"TEST_COMPLETE","BTC LONG filtreli Radar 50 kapanmış işleme ulaştı; yeni giriş durduruldu.");return
+ if mode=="Mevcut Radar" and sum(t.get("Strateji")=="Mevcut Radar + Fib + BTC LONG" for t in s.get("trades",[]))>=100:
+  save(s);config_status(c,"TEST_COMPLETE","BTC LONG filtreli Radar 100 kapanmış işleme ulaştı; yeni giriş durduruldu.");return
  n=max(1,min(60,int(c.get("scan_count",30))));m=max(1,min(50,int(c.get("max_positions",5))));rr=max(2,min(5,int(c.get("reward_ratio",2))));sens=float(c.get("nk_sens",1));period=int(c.get("nk_atr",10))
  now=datetime.now(timezone.utc);today=now.strftime("%Y-%m-%d");s.setdefault("seen",[])
  if s.get("day")!=today:s["day"]=today;s["day_start"]=s["cash"]+sum(p["margin"] for p in s["positions"])
