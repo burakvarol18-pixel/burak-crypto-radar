@@ -64,6 +64,18 @@ def fib_ok(d,price,direction,limit=1.0):
  levels=sorted(lo+(hi-lo)*x for x in (0,.236,.382,.5,.618,.786,1))
  eligible=[x for x in levels if x<=price] if direction==1 else [x for x in levels if x>=price]
  return bool(eligible) and abs(price-(max(eligible) if direction==1 else min(eligible)))/atr<=limit
+def btc_long_trend_ok():
+ # Require BOTH confirmed 4H and UTC daily BTC closes above EMA200 trend.
+ # Use completed bars only; unavailable data fails closed for LONG.
+ for bar in ("4H","1Dutc"):
+  d=candles("BTC-USDT-SWAP",bar)
+  d=d[d.confirm=="1"].reset_index(drop=True)
+  if len(d)<210:return False
+  close=d.close.astype(float)
+  ema50=close.ewm(span=50,adjust=False).mean().iloc[-1]
+  ema200=close.ewm(span=200,adjust=False).mean().iloc[-1]
+  if not np.isfinite(ema50) or not np.isfinite(ema200) or ema50<=ema200:return False
+ return True
 def hdr():return {"apikey":K,"Authorization":"Bearer "+K,"Content-Type":"application/json"}
 def config():
  r=requests.get(U+"/rest/v1/paper_bot_config",headers=hdr(),params={"account_id":"eq."+A},timeout=15);r.raise_for_status();x=r.json()
@@ -103,14 +115,17 @@ def main():
  if not bool(c.get("enabled",False)):save(s);config_status(c,"PAUSED","Worker çalıştı; yeni girişler duraklatılmış.");print("disabled; exits checked");return
  mode=c.get("strategy","NKRAL1")
  if mode not in ("NKRAL1","Mevcut Radar"):raise RuntimeError("Unsupported paper strategy")
- if mode=="Mevcut Radar" and sum(t.get("Strateji")=="Mevcut Radar + Fib" for t in s.get("trades",[]))>=50:
-  save(s);config_status(c,"TEST_COMPLETE","Mevcut Radar 50 kapanmış işleme ulaştı; yeni giriş durduruldu.");return
+ if mode=="Mevcut Radar" and sum(t.get("Strateji")=="Mevcut Radar + Fib + BTC LONG" for t in s.get("trades",[]))>=50:
+  save(s);config_status(c,"TEST_COMPLETE","BTC LONG filtreli Radar 50 kapanmış işleme ulaştı; yeni giriş durduruldu.");return
  n=max(1,min(60,int(c.get("scan_count",30))));m=max(1,min(50,int(c.get("max_positions",5))));rr=max(2,min(5,int(c.get("reward_ratio",2))));sens=float(c.get("nk_sens",1));period=int(c.get("nk_atr",10))
  now=datetime.now(timezone.utc);today=now.strftime("%Y-%m-%d");s.setdefault("seen",[])
  if s.get("day")!=today:s["day"]=today;s["day_start"]=s["cash"]+sum(p["margin"] for p in s["positions"])
  eq=s["cash"]+sum(p["margin"]+p["direction"]*p["notional"]*(quotes.get(p["inst"],p["entry"])/p["entry"]-1) for p in s["positions"])
  if s["day_start"]-eq>=15:save(s);config_status(c,"DAILY_STOP","Günlük 15 USDT zarar eşiği; yeni giriş yok.");print("daily loss stop");return
  opened=0
+ # Fetch BTC regime once per scan. If unavailable, reject LONG, preserve SHORT.
+ try: btc_long_allowed=btc_long_trend_ok() if mode=="Mevcut Radar" else False
+ except (ValueError,KeyError,TypeError,IndexError,requests.RequestException):btc_long_allowed=False
  for x in u[:n]:
   if len(s["positions"])>=m or s["cash"]<10:break
   q=x["id"]
@@ -122,6 +137,7 @@ def main():
    if key in s["seen"]:continue
    direction=radar_signal(d) if mode=="Mevcut Radar" else signal(d,sens,period);s["seen"].append(key)
    if not direction:continue
+   if mode=="Mevcut Radar" and direction==1 and not btc_long_allowed:continue
    # V8.2: 4H NKRAL trend confirmation. Keep R:R unchanged; only aligned 1H/4H signals may enter.
    if mode=="Mevcut Radar":
     signal_price=float(d.close.iloc[-1])
@@ -141,7 +157,7 @@ def main():
    projected_loss=notional*frac + notional*(stop/px)*.0005
    if stop_exposure(s["positions"])+projected_loss>15.:continue
    if margin+fee>s["cash"] or notional<10:continue
-   s["cash"]-=margin+fee;s["positions"].append({"inst":q,"strategy":("Mevcut Radar + Fib" if mode=="Mevcut Radar" else "NKRAL1+4H"),"risk_guard":"V8.3-open-stop-15USDT","direction":direction,"entry":px,"stop":stop,"target":target,"reward_ratio":rr,"notional":notional,"margin":margin,"entry_fee":fee,"time":now.isoformat(timespec="seconds"),"bar":bar});opened+=1
+   s["cash"]-=margin+fee;s["positions"].append({"inst":q,"strategy":("Mevcut Radar + Fib + BTC LONG" if mode=="Mevcut Radar" else "NKRAL1+4H"),"risk_guard":"V8.3-open-stop-15USDT","direction":direction,"entry":px,"stop":stop,"target":target,"reward_ratio":rr,"notional":notional,"margin":margin,"entry_fee":fee,"time":now.isoformat(timespec="seconds"),"bar":bar});opened+=1
   except (ValueError,KeyError,TypeError,IndexError,requests.RequestException):continue
- s["seen"]=s["seen"][-1500:];s["last_scan"]=now.isoformat(timespec="seconds");save(s);msg=f"opened={opened} positions={len(s['positions'])}";config_status(c,"OK",msg);print("OK "+msg)
+ s["seen"]=s["seen"][-1500:];s["last_scan"]=now.isoformat(timespec="seconds");save(s);msg=f"opened={opened} positions={len(s['positions'])} BTC_LONG={btc_long_allowed if mode=='Mevcut Radar' else 'n/a'}";config_status(c,"OK",msg);print("OK "+msg)
 if __name__=="__main__":main()
