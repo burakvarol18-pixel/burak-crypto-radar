@@ -1116,6 +1116,89 @@ def paper_db_load():
     return state
 
 
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def btc_historical_ema(interval, oldest):
+    """Fetch closed BTC swap bars backward, enough for 200-EMA before oldest trade."""
+    bar={"4h":"4H","1d":"1Dutc"}[interval]
+    seconds=14400 if interval=="4h" else 86400
+    cutoff=pd.Timestamp(oldest)-pd.Timedelta(seconds=seconds*260)
+    collected={};cursor=None
+    for _ in range(18):
+        params={"instId":"BTC-USDT-SWAP","bar":bar,"limit":"100"}
+        if cursor is not None:params["after"]=str(cursor)
+        batch=okx_public("/api/v5/market/history-candles",params)
+        if not batch:break
+        for x in batch:
+            if len(x)>=9 and x[8]=="1":
+                collected[int(x[0])]=float(x[4])
+        new_cursor=min(int(x[0]) for x in batch)
+        if cursor is not None and new_cursor>=cursor:break
+        cursor=new_cursor
+        if pd.Timestamp(cursor,unit="ms",tz="UTC")<=cutoff:break
+    if not collected:raise ValueError("OKX BTC geçmiş mumlarını döndürmedi.")
+    frame=pd.DataFrame({"date":pd.to_datetime(list(collected),unit="ms",utc=True),
+                        "close":list(collected.values())}).sort_values("date").reset_index(drop=True)
+    frame["ema50"]=frame.close.ewm(span=50,adjust=False,min_periods=200).mean()
+    frame["ema200"]=frame.close.ewm(span=200,adjust=False,min_periods=200).mean()
+    frame["available_at"]=frame.date+pd.Timedelta(seconds=seconds)
+    return frame
+
+
+def long_btc_filter_audit(trades):
+    st.subheader("🔍 LONG kayıpları — BTC 4H + günlük trend geriye dönük kontrol")
+    st.caption("Mevcut 50 işlem testini ve Paper Bot ayarlarını değiştirmez. Giriş anında tamamen kapanmış BTC mumları kullanılır.")
+    if not st.button("BTC EMA50/EMA200 filtresini 31 LONG işlemde test et",key="long_btc_audit"):
+        return
+    selected=[t for t in trades if t.get("Strateji")=="Mevcut Radar + Fib" and t.get("Yön")=="LONG"]
+    if not selected:st.warning("Uygun LONG işlem bulunamadı.");return
+    try:
+        entries=[pd.to_datetime(t["Giriş UTC"],utc=True) for t in selected]
+        oldest=min(entries)
+        frames={tf:btc_historical_ema(tf,oldest) for tf in ("4h","1d")}
+        rows=[]
+        for trade,entry_at in zip(selected,entries):
+            details={}
+            for tf,frame in frames.items():
+                past=frame[frame.available_at<=entry_at]
+                if past.empty:details[tf]=None
+                else:
+                    last=past.iloc[-1]
+                    details[tf]=(bool(last.ema50>last.ema200)
+                                 if pd.notna(last.ema50) and pd.notna(last.ema200) else None)
+            pnl=float(trade["Net P&L (USDT)"])
+            valid=all(x is not None for x in details.values())
+            accepted=all(details.values()) if valid else None
+            rows.append({"Parite":trade.get("Parite"),"Giriş UTC":entry_at,
+                         "BTC 4H yükseliş":details["4h"],"BTC 1D yükseliş":details["1d"],
+                         "Filtre geçer":accepted,"Net P&L":pnl,"Kazanç":pnl>0})
+        df=pd.DataFrame(rows)
+        valid=df[df["Filtre geçer"].notna()].copy()
+        if len(valid)<len(df):
+            st.warning(f"{len(df)-len(valid)} işlem için yeterli BTC geçmişi yok; bu işlemler hesaba katılmadı.")
+        passed=valid[valid["Filtre geçer"]==True]
+        blocked=valid[valid["Filtre geçer"]==False]
+        baseline=valid["Net P&L"].sum()
+        filtered=passed["Net P&L"].sum()
+        st.metric("Geçerli işlem",len(valid))
+        a,b,c=st.columns(3)
+        a.metric("İzin verilen",len(passed))
+        b.metric("Engellenen",len(blocked))
+        c.metric("Engellenen kazançlı işlem",int(blocked.Kazanç.sum()))
+        a,b,c=st.columns(3)
+        a.metric("Filtresiz P&L",f"{baseline:+.2f} USDT")
+        b.metric("Filtreli P&L",f"{filtered:+.2f} USDT")
+        c.metric("Fark",f"{filtered-baseline:+.2f} USDT")
+        st.dataframe(df,hide_index=True,use_container_width=True)
+        st.download_button("📥 LONG BTC filtre analizi CSV",df.to_csv(index=False).encode("utf-8-sig"),
+                           "long_btc_trend_audit.csv","text/csv",key="long_btc_audit_csv")
+        st.warning("Bu bir geçmiş işlem eleme simülasyonudur: Engellenen işlemler hiç açılmamış varsayılır. "
+                   "Boşalan sermaye ile yeni işlem, portföy etkisi ve piyasa rejimi değişimi modellenmez. "
+                   "EMA geçmişi OKX API kapsamına bağlıdır; örneklem küçük ve geçmiş veriye uyum riski vardır.")
+    except Exception as exc:
+        st.error(f"BTC geçmiş karşılaştırması yapılamadı: {type(exc).__name__}: {exc}")
+
+
 def paper_db_save(state):
     import json
     safe = json.loads(json.dumps(state, allow_nan=False))
@@ -1325,6 +1408,7 @@ with paper_tab:
                 if saved is not None: st.session_state["paper_v62"] = saved
                 st.session_state["paper_db_loaded"] = True
             ps = paper_state()
+            long_btc_filter_audit(ps.get("trades", []))
             bot = paper_bot_config_load()
             if bot is None:
                 st.error("V8 kontrol tablosu henüz Supabase'de oluşturulmadı. Aşağıdaki SQL kurulumunu bir kez çalıştır.")
